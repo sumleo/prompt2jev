@@ -189,13 +189,20 @@ class ExampleTests(unittest.TestCase):
 
 
 class VideoTests(unittest.TestCase):
-    """Both READMEs link the poster frame to the rendered README video in assets/, and both files are real."""
+    """Both READMEs embed the README video as one GitHub-hosted upload (the only URL form GitHub renders as
+    a player), link the committed copy in assets/, and both committed files are real."""
     folder = ROOT / "assets"
+    upload = re.compile(r"^https://github\.com/user-attachments/assets/[0-9a-f-]{36}$", re.M)
 
-    def test_readmes_link_the_rendered_video(self):
+    def test_readmes_embed_the_rendered_video(self):
+        uploads = set()
         for name in ("README.md", "README.zh.md"):
             readme = (ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("](assets/prompt2jev-walkthrough-poster.jpg)](assets/prompt2jev-walkthrough.mp4)", readme, name)
+            found = self.upload.findall(readme)
+            self.assertEqual(len(found), 1, name)
+            uploads.update(found)
+            self.assertIn("](assets/prompt2jev-walkthrough.mp4)", readme, name)
+        self.assertEqual(len(uploads), 1, "both READMEs must embed the same upload")
         self.assertTrue((self.folder / "prompt2jev-walkthrough.mp4").stat().st_size > 1_000_000)
         self.assertTrue((self.folder / "prompt2jev-walkthrough-poster.jpg").stat().st_size > 10_000)
 
