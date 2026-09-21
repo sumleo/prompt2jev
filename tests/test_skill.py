@@ -7,9 +7,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills" / "prompt2jev"
 REFERENCES = ("playbook", "question-design", "api", "composition", "examples")
-ARCHETYPES = ("classify-route", "checklist-guardrail", "rubric-composite", "extract-select", "verify-claim")
 sys.path.insert(0, str(SKILL / "scripts"))
 import prompt2jev as p2j  # noqa: E402
+
+ARCHETYPES = p2j.ARCHETYPES
 
 
 def frontmatter(text):

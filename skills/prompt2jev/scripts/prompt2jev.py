@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+import http.client
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -26,14 +27,13 @@ PROVIDERS = {
                    "model": "typesafe/jev-1.13"},
 }
 # A request written for one provider can run on the other; only these known ids are rewritten.
-MODEL_ALIASES = {
-    "openrouter": {"jev-latest": "typesafe/jev-1.13", "jev-1.13.0": "typesafe/jev-1.13"},
+MODEL_ALIASES = {  # both TypeSafe aliases resolve to jev-1.13.0 today
+    "openrouter": {"jev-latest": "typesafe/jev-1.13", "jev-preview": "typesafe/jev-1.13",
+                   "jev-1.13.0": "typesafe/jev-1.13"},
     "typesafe": {"typesafe/jev-1.13": "jev-1.13.0"},
 }
 MOVING_ALIASES = {"jev-latest", "jev-preview"}
 QUESTION_TYPES = ("choice", "score", "noul")
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
-ARCHETYPES = ("classify-route", "checklist-guardrail", "rubric-composite", "extract-select", "verify-claim")
 
 
 class RequestError(ValueError):
@@ -45,7 +45,7 @@ class ResponseError(ValueError):
 
 
 class TransportError(RuntimeError):
-    """A network or HTTP failure. Never carries the API key or the provider body."""
+    """A network or HTTP failure. May quote a short, key-masked excerpt of the provider's error body."""
 
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
@@ -59,17 +59,26 @@ def _reject_constant(value):
 
 
 def load_json(text: str):
-    return json.loads(text, parse_constant=_reject_constant)
+    try:
+        return json.loads(text, parse_constant=_reject_constant)
+    except RecursionError:
+        raise RequestError("JSON is nested too deeply") from None
+    except ValueError as error:  # JSONDecodeError, the integer-digit limit, or a non-finite constant
+        if isinstance(error, RequestError):
+            raise
+        raise RequestError(f"Invalid JSON: {error}") from None
 
 
 def read_json(path: str):
-    text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8")
-    return load_json(text)
+    text = sys.stdin.read() if path == "-" else Path(path).read_text(encoding="utf-8-sig")
+    return load_json(text.lstrip("\ufeff"))
 
 
 def _is_entry(value) -> bool:
     """instructions and criteria descriptions: nonempty string, object, or array."""
-    return isinstance(value, (dict, list)) or (isinstance(value, str) and bool(value.strip()))
+    if isinstance(value, str):
+        return bool(value.strip())
+    return isinstance(value, (dict, list)) and bool(value)
 
 
 # ----- Request validation (the documented contract) -----
@@ -80,8 +89,9 @@ def validate_request(payload) -> dict:
     extra = set(payload) - {"model", "state", "questions"}
     if extra:
         raise RequestError(f"Unsupported top-level fields {sorted(extra)}; use only model, state, questions")
-    if not isinstance(payload.get("state"), (str, dict, list)):
-        raise RequestError("state must be a string, a JSON object, or an array")
+    state = payload.get("state")
+    if not isinstance(state, (str, dict, list)) or not state or (isinstance(state, str) and not state.strip()):
+        raise RequestError("state must be a nonempty string, JSON object, or array")
     if not isinstance(payload.get("model"), str) or not payload["model"].strip():
         raise RequestError("model must be a nonempty string such as jev-latest")
     questions = payload.get("questions")
@@ -244,8 +254,11 @@ THRESHOLDS = {"confidence_high": 0.8, "confidence_low": 0.5, "noul_yes": 0.8, "n
 
 
 def _number(value, low, high, name):
-    if (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
-            or not low <= value <= high):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ResponseError(f"{name} must be a finite number in [{low}, {high}]")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ResponseError(f"{name} must be a finite number in [{low}, {high}]")
+    if not low <= value <= high:  # compare before any float conversion: huge ints must not overflow
         raise ResponseError(f"{name} must be a finite number in [{low}, {high}]")
     return value
 
@@ -256,7 +269,7 @@ def _distribution(answer: dict, labels, qid: str) -> dict:
         raise ResponseError(f"{qid}: probabilities must cover exactly the request's options")
     for value in probabilities.values():
         _number(value, 0, 1, f"{qid} probability")
-    if not math.isclose(sum(probabilities.values()), 1, abs_tol=0.02 + 0.001 * len(probabilities)):
+    if not math.isclose(sum(probabilities.values()), 1, abs_tol=min(0.05, 0.02 + 0.001 * len(probabilities))):
         raise ResponseError(f"{qid}: probabilities must sum to 1")
     _number(answer.get("confidence"), 0, 1, f"{qid} confidence")
     return probabilities
@@ -265,6 +278,8 @@ def _distribution(answer: dict, labels, qid: str) -> dict:
 def validate_response(payload: dict, response) -> dict:
     if not isinstance(response, dict) or not isinstance(response.get("answers"), dict):
         raise ResponseError("response must be an object with an answers map")
+    if not isinstance(response.get("model"), str) or not response["model"].strip():
+        raise ResponseError("response must name the model that answered")
     answers = response["answers"]
     for qid, question in payload["questions"].items():
         answer = answers.get(qid)
@@ -274,14 +289,16 @@ def validate_response(payload: dict, response) -> dict:
         if kind == "choice":
             probabilities = _distribution(answer, question["criteria"], qid)
             choice = answer.get("choice")
-            if choice not in probabilities or probabilities[choice] != max(probabilities.values()):
+            if (not isinstance(choice, str) or choice not in probabilities
+                    or probabilities[choice] != max(probabilities.values())):
                 raise ResponseError(f"{qid}: choice must be the highest-probability option")
         elif kind == "score":
             levels = [str(index) for index in range(len(question["criteria"]))]
             _distribution(answer, levels, qid)
             legend = answer.get("legend")
-            if not isinstance(legend, dict) or set(legend) != set(levels):
-                raise ResponseError(f"{qid}: legend must map every level index")
+            if (not isinstance(legend, dict) or set(legend) != set(levels)
+                    or not all(_is_entry(value) for value in legend.values())):
+                raise ResponseError(f"{qid}: legend must map every level index to its description")
             _number(answer.get("score"), 0, len(levels) - 1, f"{qid} score")
         else:
             _number(answer.get("noul"), 0, 1, f"{qid} noul")
@@ -324,6 +341,7 @@ def build_report(payload: dict, response: dict) -> dict:
 
 RETRY_STATUSES = {429, 529}
 MAX_ATTEMPTS = 3
+MAX_RESPONSE_BYTES = 4_000_000
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -331,11 +349,14 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # never forward the Authorization header to another host
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+_opener = None
 
 
 def _open(request: urllib.request.Request, timeout: float):
-    return _OPENER.open(request, timeout=timeout)
+    global _opener
+    if _opener is None:  # built on first live call only; validate/template/setup never pay for it
+        _opener = urllib.request.build_opener(_NoRedirect)
+    return _opener.open(request, timeout=timeout)
 
 
 def _api_key(provider: str) -> str:
@@ -355,12 +376,13 @@ def _backoff(attempt: int, retry_after) -> float:
         return float(2 ** (attempt - 1))
 
 
-def _snippet(error) -> str:
-    """A short, key-free excerpt of the provider's error body, for diagnosing 4xx replies."""
+def _snippet(error, key: str) -> str:
+    """A short excerpt of the provider's error body with the API key masked, for diagnosing 4xx replies."""
     try:
         text = error.read(2000).decode("utf-8", "replace").strip()
     except (OSError, ValueError, AttributeError):
         return ""
+    text = text.replace(key, "<redacted>")
     return f": {text[:300]}" if text else ""
 
 
@@ -372,7 +394,7 @@ def _hint(status: int) -> str:
 
 
 def send(payload: dict, provider: str = "typesafe", timeout: float = 30.0, sleep=time.sleep) -> dict:
-    """POST the request. Retries 429 and 529 with backoff up to MAX_ATTEMPTS; never retries 401 or 422."""
+    """POST the request. Retries 429 and 529 with backoff up to MAX_ATTEMPTS; never retries anything else."""
     if provider not in PROVIDERS:
         raise TransportError("provider must be typesafe or openrouter")
     key = _api_key(provider)
@@ -384,32 +406,36 @@ def send(payload: dict, provider: str = "typesafe", timeout: float = 30.0, sleep
                      "User-Agent": f"prompt2jev/{VERSION}"})
         try:
             with _open(request, timeout) as reply:
-                result = load_json(reply.read().decode("utf-8"))
+                raw = reply.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
             status = error.code
             retry_after = error.headers.get("retry-after") if error.headers else None
-            detail = _snippet(error)
+            detail = _snippet(error, key)
             error.close()
             if status in RETRY_STATUSES and attempt < MAX_ATTEMPTS:
                 sleep(_backoff(attempt, retry_after))
                 continue
             raise TransportError(f"{provider} returned HTTP {status}{_hint(status)}{detail}",
                                  status=status) from None
-        except (urllib.error.URLError, TimeoutError, OSError):
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError):
             raise TransportError(f"{provider} connection failed or timed out") from None
-        except (json.JSONDecodeError, UnicodeError, RequestError):
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise TransportError(f"{provider} response exceeded {MAX_RESPONSE_BYTES} bytes")
+        try:
+            result = load_json(raw.decode("utf-8"))
+        except (RequestError, UnicodeError):
             raise TransportError(f"{provider} returned invalid JSON") from None
         if not isinstance(result, dict) or "error" in result:
             detail = json.dumps(result.get("error"), ensure_ascii=False)[:300] if isinstance(result, dict) else ""
-            raise TransportError(f"{provider} returned an error object: {detail}")
+            raise TransportError(f"{provider} returned an error object" + (f": {detail}" if detail else ""))
         return result
-    raise TransportError(f"{provider} did not answer after {MAX_ATTEMPTS} attempts")
 
 
 def resolve_model(payload: dict, provider: str, override: str | None) -> str:
-    if override:
-        return override
-    model = payload.get("model") or PROVIDERS[provider]["model"]
+    """The id to send: an explicit override or the request's model, with known ids mapped to the provider."""
+    model = (override if override is not None else payload["model"]).strip()
+    if not model:
+        raise RequestError("model must be a nonempty string")
     return MODEL_ALIASES[provider].get(model, model)
 
 
@@ -703,6 +729,7 @@ TEMPLATES: dict = json.loads(r'''
   }
 }
 ''')
+ARCHETYPES = tuple(TEMPLATES)
 
 
 # ----- CLI -----
@@ -736,21 +763,29 @@ def cmd_validate(args) -> int:
 
 def cmd_run(args) -> int:
     payload = validate_request(read_json(args.request))
-    payload["model"] = resolve_model(payload, args.provider, args.model)
     if not 0.1 <= args.timeout <= 300:
         raise RequestError("timeout must be between 0.1 and 300 seconds")
-    print_findings(_findings(payload, args.allow))
+    print_findings(_findings(payload, args.allow))  # lint the model id as written, before provider rewriting
+    payload["model"] = resolve_model(payload, args.provider, args.model)
     if args.dry_run:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     started = time.monotonic()
     response = send(payload, args.provider, args.timeout)
-    report = build_report(payload, response)
-    report["elapsed_seconds"] = round(time.monotonic() - started, 3)
-    report["provider"] = args.provider
-    text = json.dumps({"request": payload, "response": response, "report": report},
-                      ensure_ascii=False, indent=2)
+    elapsed = round(time.monotonic() - started, 3)
+    output = {"request": payload, "response": response}
+    status = 0
+    try:
+        report = build_report(payload, response)
+        report.update(elapsed_seconds=elapsed, provider=args.provider)
+        output["report"] = report
+    except ResponseError as error:  # keep the paid response; report why it could not be interpreted
+        output["error"] = f"response did not match the contract: {error}"
+        status = 1
+    text = json.dumps(output, ensure_ascii=False, indent=2)
     print(text)  # always print first: the call has been paid for
+    if status:
+        print(json.dumps({"error": output["error"]}), file=sys.stderr)
     if args.output:
         try:
             Path(args.output).write_text(text + "\n", encoding="utf-8")
@@ -758,7 +793,7 @@ def cmd_run(args) -> int:
             print(json.dumps({"error": f"response printed above, but writing {args.output} failed: {error}"}),
                   file=sys.stderr)
             return 1
-    return 0
+    return status
 
 
 def cmd_template(args) -> int:
@@ -767,7 +802,13 @@ def cmd_template(args) -> int:
 
 
 def cmd_setup(args) -> int:
-    present = {name: bool(os.environ.get(spec["env"], "").strip()) for name, spec in PROVIDERS.items()}
+    present = {}
+    for name in PROVIDERS:
+        try:
+            _api_key(name)  # the same rule run applies, so setup and run agree
+            present[name] = True
+        except TransportError:
+            present[name] = False
     default = next((name for name in ("typesafe", "openrouter") if present[name]), None)
     print(json.dumps({
         "keys_present": present,
@@ -813,10 +854,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")  # never lose a paid response to an unencodable character
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (RequestError, ResponseError, TransportError, OSError, json.JSONDecodeError, UnicodeError) as error:
+    except (RequestError, ResponseError, TransportError, OSError, ValueError, RecursionError,
+            UnicodeError) as error:
         print(json.dumps({"error": str(error)}), file=sys.stderr)
         return 1
 

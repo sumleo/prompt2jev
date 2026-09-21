@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills" / "prompt2jev"
+ASSETS = SKILL / "assets"
 sys.path.insert(0, str(SKILL / "scripts"))
 import prompt2jev as p2j  # noqa: E402
 
@@ -77,6 +78,29 @@ class ValidateRequestTests(unittest.TestCase):
     def test_rejects_nonfinite_json(self):
         for text in ('{"a": NaN}', '{"a": Infinity}'):
             with self.assertRaises(p2j.RequestError):
+                p2j.load_json(text)
+
+    def test_rejects_empty_entries_and_empty_state(self):
+        bad = [request(state={}), request(state=""), request(state=[])]
+        payload = request("score")
+        payload["questions"]["q"]["criteria"] = [{}, []]
+        bad.append(payload)
+        payload = request("noul")
+        payload["questions"]["q"]["criteria"] = {"true": {}, "false": "No"}
+        bad.append(payload)
+        payload = request()
+        payload["questions"]["q"]["criteria"] = {"refund": [], "other": "Else"}
+        bad.append(payload)
+        payload = request()
+        payload["questions"]["q"]["instructions"] = {}
+        bad.append(payload)
+        for payload in bad:
+            with self.subTest(payload=payload), self.assertRaises(p2j.RequestError):
+                p2j.validate_request(payload)
+
+    def test_pathological_json_is_a_request_error(self):
+        for text in ("1" * 5000, "[" * 100_000):
+            with self.subTest(text=text[:5]), self.assertRaises(p2j.RequestError):
                 p2j.load_json(text)
 
 
@@ -193,7 +217,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual((medium, low), ("medium", "low"))
 
     def test_score_report(self):
-        response = {"answers": {"q": {"type": "score", "score": 1.43, "confidence": 0.35,
+        response = {"model": "jev-1.13.0", "answers": {"q": {"type": "score", "score": 1.43, "confidence": 0.35,
                                       "legend": {"0": "a", "1": "b", "2": "c"},
                                       "probabilities": {"0": 0.0, "1": 0.57, "2": 0.43}}}}
         row = p2j.build_report(request("score"), response)["questions"]["q"]
@@ -201,14 +225,14 @@ class ReportTests(unittest.TestCase):
                          (1.43, 1, "b", "low"))
 
     def test_score_nearest_level_rounds_half_up(self):
-        response = {"answers": {"q": {"type": "score", "score": 0.5, "confidence": 0.0,
+        response = {"model": "jev-1.13.0", "answers": {"q": {"type": "score", "score": 0.5, "confidence": 0.0,
                                       "legend": {"0": "a", "1": "b", "2": "c"},
                                       "probabilities": {"0": 0.5, "1": 0.5, "2": 0.0}}}}
         self.assertEqual(p2j.build_report(request("score"), response)["questions"]["q"]["nearest_level"], 1)
 
     def test_noul_report(self):
         for value, band in ((0.95, "yes"), (0.5, "uncertain"), (0.1, "no")):
-            response = {"answers": {"q": {"type": "noul", "noul": value}}}
+            response = {"model": "jev-1.13.0", "answers": {"q": {"type": "noul", "noul": value}}}
             self.assertEqual(p2j.build_report(request("noul"), response)["questions"]["q"]["band"], band)
 
     def test_rejects_bad_responses(self):
@@ -227,13 +251,35 @@ class ReportTests(unittest.TestCase):
         with self.assertRaises(p2j.ResponseError):
             p2j.build_report(request(), response)
 
+    def test_malformed_provider_values_are_response_errors(self):
+        response = choice_response()
+        response["answers"]["q"]["choice"] = ["refund"]
+        with self.assertRaises(p2j.ResponseError):
+            p2j.build_report(request(), response)
+        response = {"model": "jev-1.13.0", "answers": {"q": {"type": "noul", "noul": 10 ** 400}}}
+        with self.assertRaises(p2j.ResponseError):
+            p2j.build_report(request("noul"), response)
+        response = choice_response()
+        response["model"] = None
+        with self.assertRaises(p2j.ResponseError):
+            p2j.build_report(request(), response)
+        response = {"model": "jev-1.13.0", "answers": {"q": {"type": "score", "score": 1.0, "confidence": 1.0,
+                                                           "legend": {"0": None, "1": 7, "2": []},
+                                                           "probabilities": {"0": 0.0, "1": 1.0, "2": 0.0}}}}
+        with self.assertRaises(p2j.ResponseError):
+            p2j.build_report(request("score"), response)
 
-class FakeReply(io.BytesIO):
-    def __enter__(self):
-        return self
+    def test_probability_sum_tolerance_is_capped(self):
+        payload = request()
+        payload["questions"]["q"]["criteria"] = {f"c{i}": "Candidate" for i in range(255)}
+        probabilities = {f"c{i}": 0.73 if i == 0 else 0.0 for i in range(255)}
+        response = {"model": "jev-1.13.0", "answers": {"q": {"type": "choice", "choice": "c0",
+                                                           "probabilities": probabilities, "confidence": 1.0}}}
+        with self.assertRaises(p2j.ResponseError):
+            p2j.build_report(payload, response)
 
-    def __exit__(self, *_args):
-        return None
+
+FakeReply = io.BytesIO
 
 
 def http_error(status, retry_after=None):
@@ -327,13 +373,36 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(p2j.resolve_model(request(model="typesafe/jev-1.13"), "typesafe", None), "jev-1.13.0")
         self.assertEqual(p2j.resolve_model(request(), "typesafe", "jev-1.13.0"), "jev-1.13.0")
         self.assertEqual(p2j.resolve_model(request(model="custom"), "openrouter", None), "custom")
+        self.assertEqual(p2j.resolve_model(request(), "openrouter", "jev-1.13.0"), "typesafe/jev-1.13")
+        self.assertEqual(p2j.resolve_model(request(model="jev-preview"), "openrouter", None), "typesafe/jev-1.13")
+        with self.assertRaises(p2j.RequestError):
+            p2j.resolve_model(request(), "typesafe", "   ")
+
+    def test_http_client_failures_become_transport_errors(self):
+        import http.client
+        for failure in (http.client.IncompleteRead(b""), http.client.BadStatusLine("garbage")):
+            with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                    patch.object(p2j, "_open", side_effect=failure), \
+                    self.assertRaises(p2j.TransportError):
+                p2j.send(request(), sleep=lambda _: None)
+
+    def test_error_body_redacts_the_key(self):
+        body = io.BytesIO(b'{"detail": "bad token sk-secret in header"}')
+        error = urllib.error.HTTPError("https://api.typesafe.ai/v1/systemone", 401, "err",
+                                       email.message.Message(), body)
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "sk-secret"}, clear=True), \
+                patch.object(p2j, "_open", side_effect=[error]), \
+                self.assertRaises(p2j.TransportError) as caught:
+            p2j.send(request())
+        self.assertIn("bad token", str(caught.exception))
+        self.assertNotIn("sk-secret", str(caught.exception))
 
 
 class AssetTests(unittest.TestCase):
     def test_every_archetype_is_valid_and_lint_clean(self):
         for name in p2j.ARCHETYPES:
             with self.subTest(asset=name):
-                payload = json.loads((p2j.ASSETS_DIR / f"{name}.json").read_text(encoding="utf-8"))
+                payload = json.loads((ASSETS / f"{name}.json").read_text(encoding="utf-8"))
                 findings = p2j.lint_request(p2j.validate_request(payload))
                 self.assertEqual([f for f in findings if f["level"] != "info"], [], findings)
                 self.assertGreaterEqual(len(payload["questions"]), 3)
@@ -346,10 +415,18 @@ class AssetTests(unittest.TestCase):
                         self.assertIn(path, referenced, f"{name}: state field {path} is unused")
 
     def test_bundled_templates_match_asset_files(self):
-        self.assertEqual(set(p2j.TEMPLATES), set(p2j.ARCHETYPES))
+        self.assertEqual(tuple(p2j.TEMPLATES), p2j.ARCHETYPES)
+        self.assertEqual(sorted(path.stem for path in ASSETS.glob("*.json")), sorted(p2j.ARCHETYPES))
         for name in p2j.ARCHETYPES:
-            payload = json.loads((p2j.ASSETS_DIR / f"{name}.json").read_text(encoding="utf-8"))
+            payload = json.loads((ASSETS / f"{name}.json").read_text(encoding="utf-8"))
             self.assertEqual(p2j.TEMPLATES[name], payload, name)
+
+    def test_version_is_consistent(self):
+        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual(plugin["version"], p2j.VERSION)
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('dynamic = ["version"]', pyproject)
+        self.assertIn('attr = "prompt2jev.VERSION"', pyproject)
 
 
 def run_cli(argv, env=None, open_side_effect=None):
@@ -363,7 +440,9 @@ def run_cli(argv, env=None, open_side_effect=None):
 
 class CliTests(unittest.TestCase):
     def write(self, payload):
-        path = Path(tempfile.mkdtemp()) / "request.json"
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, ignore_errors=True)
+        path = Path(folder) / "request.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         return str(path)
 
@@ -426,6 +505,54 @@ class CliTests(unittest.TestCase):
         status, _, _ = run_cli(["validate", self.write(payload), "--strict", "--allow", "not-a-code"])
         self.assertEqual(status, 1)
 
+    def test_run_prints_raw_response_when_report_fails(self):
+        response = choice_response()
+        del response["answers"]["q"]["confidence"]
+        reply = io.BytesIO(json.dumps(response).encode())
+        status, out, err = run_cli(["run", self.write(request())], env={"TYPESAFE_API_KEY": "k"},
+                                   open_side_effect=[reply])
+        self.assertEqual(status, 1)
+        self.assertEqual(json.loads(out)["response"], response)
+        self.assertIn("confidence", err)
+
+    def test_run_lints_the_original_model(self):
+        status, _, err = run_cli(["run", self.write(request()), "--dry-run", "--provider", "openrouter"])
+        self.assertEqual(status, 0)
+        self.assertIn("model-alias", err)
+
+    def test_setup_agrees_with_key_rules(self):
+        status, out, _ = run_cli(["setup"], env={"TYPESAFE_API_KEY": "sk key", "OPENROUTER_API_KEY": "ok"})
+        report = json.loads(out)
+        self.assertEqual((status, report["keys_present"], report["default_provider"]),
+                         (0, {"typesafe": False, "openrouter": True}, "openrouter"))
+        self.assertNotIn("sk key", out)
+
+    def test_validate_accepts_utf8_bom(self):
+        path = Path(tempfile.mkdtemp()) / "bom.json"
+        path.write_bytes(b"\xef\xbb\xbf" + json.dumps(request(model="jev-1.13.0")).encode())
+        status, out, _ = run_cli(["validate", str(path), "--strict"])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out)["model"], "jev-1.13.0")
+
+    def test_pathological_input_files_exit_one(self):
+        for text in ("1" * 5000, "[" * 100_000):
+            path = Path(tempfile.mkdtemp()) / "bad.json"
+            path.write_text(text, encoding="utf-8")
+            completed = subprocess.run([sys.executable, str(SKILL / "scripts" / "prompt2jev.py"), "validate", str(path)],
+                                       capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+            self.assertEqual(completed.returncode, 1, completed.stderr[-300:])
+            self.assertIn("error", json.loads(completed.stderr.strip().splitlines()[-1]))
+
+    def test_printing_survives_unencodable_text(self):
+        payload = request(model="jev-1.13.0", state={"ticket": {"text": "emoji \ud83d and 中文"}})
+        path = Path(tempfile.mkdtemp()) / "surrogate.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        for env in ({}, {"PYTHONIOENCODING": "cp1252"}):
+            completed = subprocess.run([sys.executable, str(SKILL / "scripts" / "prompt2jev.py"), "validate", str(path)],
+                                       capture_output=True, env={"PATH": os.environ.get("PATH", ""), **env})
+            self.assertEqual(completed.returncode, 0, completed.stderr[-300:])
+            self.assertIn(b"questions", completed.stdout)
+
     def test_run_without_key_fails_cleanly(self):
         status, out, err = run_cli(["run", self.write(request())])
         self.assertEqual((status, out), (1, ""))
@@ -453,7 +580,7 @@ class CliTests(unittest.TestCase):
 
     def test_copied_skill_dir_still_runs(self):
         target = Path(tempfile.mkdtemp()) / "prompt2jev"
-        shutil.copytree(SKILL, target)
+        shutil.copytree(SKILL, target, ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
         completed = subprocess.run(
             [sys.executable, str(target / "scripts" / "prompt2jev.py"), "run",
              str(target / "assets" / "classify-route.json"), "--dry-run"],
