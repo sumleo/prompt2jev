@@ -3,7 +3,10 @@ import email.message
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -248,6 +251,91 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(p2j.resolve_model(request(model="typesafe/jev-1.13"), "typesafe", None), "jev-1.13.0")
         self.assertEqual(p2j.resolve_model(request(), "typesafe", "jev-1.13.0"), "jev-1.13.0")
         self.assertEqual(p2j.resolve_model(request(model="custom"), "openrouter", None), "custom")
+
+
+class AssetTests(unittest.TestCase):
+    def test_every_archetype_is_valid_and_lint_clean(self):
+        for name in p2j.ARCHETYPES:
+            with self.subTest(asset=name):
+                payload = json.loads((p2j.ASSETS_DIR / f"{name}.json").read_text(encoding="utf-8"))
+                findings = p2j.lint_request(p2j.validate_request(payload))
+                self.assertEqual([f for f in findings if f["level"] != "info"], [], findings)
+                self.assertGreaterEqual(len(payload["questions"]), 3)
+                self.assertIsInstance(payload["state"], dict)
+
+
+def run_cli(argv, env=None, open_side_effect=None):
+    out, err = io.StringIO(), io.StringIO()
+    with patch.dict("os.environ", env or {}, clear=True), \
+            patch.object(p2j, "_open", side_effect=open_side_effect or AssertionError("network")), \
+            contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        status = p2j.main(argv)
+    return status, out.getvalue(), err.getvalue()
+
+
+class CliTests(unittest.TestCase):
+    def write(self, payload):
+        path = Path(tempfile.mkdtemp()) / "request.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return str(path)
+
+    def test_validate_prints_request_and_findings(self):
+        payload = request()
+        payload["questions"]["q"]["criteria"] = {"a": "A", "b": "B"}
+        status, out, err = run_cli(["validate", self.write(payload)])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out), payload)
+        self.assertIn("choice-no-fallback", err)
+        status, _, err = run_cli(["validate", self.write(payload), "--strict"])
+        self.assertEqual(status, 1)
+        self.assertIn("--strict", err)
+
+    def test_validate_reports_schema_errors(self):
+        status, out, err = run_cli(["validate", self.write({"model": "x"})])
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("error", json.loads(err.strip().splitlines()[-1]))
+
+    def test_run_dry_run_needs_no_key_and_maps_model(self):
+        status, out, _ = run_cli(["run", self.write(request()), "--dry-run", "--provider", "openrouter"])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out)["model"], "typesafe/jev-1.13")
+
+    def test_run_live_writes_report(self):
+        output = Path(tempfile.mkdtemp()) / "result.json"
+        reply = FakeReply(json.dumps(choice_response()).encode())
+        status, out, _ = run_cli(["run", self.write(request()), "--output", str(output)],
+                                 env={"TYPESAFE_API_KEY": "k"}, open_side_effect=[reply])
+        self.assertEqual(status, 0)
+        result = json.loads(out)
+        self.assertEqual(result["report"]["questions"]["q"]["value"], "refund")
+        self.assertEqual(result["report"]["provider"], "typesafe")
+        self.assertEqual(json.loads(output.read_text())["response"], choice_response())
+
+    def test_run_without_key_fails_cleanly(self):
+        status, out, err = run_cli(["run", self.write(request())])
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("TYPESAFE_API_KEY", err)
+
+    def test_template_and_setup(self):
+        for name in p2j.ARCHETYPES:
+            status, out, _ = run_cli(["template", name])
+            self.assertEqual(status, 0)
+            p2j.validate_request(json.loads(out))
+        status, out, _ = run_cli(["setup"], env={"OPENROUTER_API_KEY": "sk-secret"})
+        report = json.loads(out)
+        self.assertEqual((status, report["keys_present"], report["default_provider"]),
+                         (0, {"typesafe": False, "openrouter": True}, "openrouter"))
+        self.assertNotIn("sk-secret", out)
+
+    def test_copied_skill_dir_still_runs(self):
+        target = Path(tempfile.mkdtemp()) / "prompt2jev"
+        shutil.copytree(SKILL, target)
+        completed = subprocess.run(
+            [sys.executable, str(target / "scripts" / "prompt2jev.py"), "run",
+             str(target / "assets" / "classify-route.json"), "--dry-run"],
+            capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("questions", completed.stdout)
 
 
 if __name__ == "__main__":

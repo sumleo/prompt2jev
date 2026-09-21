@@ -385,3 +385,106 @@ def resolve_model(payload: dict, provider: str, override: str | None) -> str:
         return override
     model = payload.get("model") or os.environ.get("JEV_MODEL") or PROVIDERS[provider]["model"]
     return MODEL_ALIASES[provider].get(model, model)
+
+
+# ----- CLI -----
+
+def print_findings(findings, stream=None):
+    stream = stream or sys.stderr
+    for finding in findings:
+        where = f" [{finding['question']}]" if finding["question"] else ""
+        print(f"{finding['level']}: {finding['code']}{where}: {finding['message']}", file=stream)
+
+
+def cmd_validate(args) -> int:
+    payload = validate_request(read_json(args.request))
+    findings = lint_request(payload)
+    print_findings(findings)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    warnings = [finding for finding in findings if finding["level"] == "warning"]
+    if args.strict and warnings:
+        print(f"error: {len(warnings)} lint warning(s) failed --strict", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_run(args) -> int:
+    payload = validate_request(read_json(args.request))
+    payload["model"] = resolve_model(payload, args.provider, args.model)
+    if not 0.1 <= args.timeout <= 300:
+        raise RequestError("timeout must be between 0.1 and 300 seconds")
+    print_findings(lint_request(payload))
+    if args.dry_run:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    started = time.monotonic()
+    response = send(payload, args.provider, args.timeout)
+    report = build_report(payload, response)
+    report["elapsed_seconds"] = round(time.monotonic() - started, 3)
+    report["provider"] = args.provider
+    text = json.dumps({"request": payload, "response": response, "report": report},
+                      ensure_ascii=False, indent=2)
+    if args.output:
+        Path(args.output).write_text(text + "\n", encoding="utf-8")
+    print(text)
+    return 0
+
+
+def cmd_template(args) -> int:
+    print((ASSETS_DIR / f"{args.archetype}.json").read_text(encoding="utf-8").rstrip())
+    return 0
+
+
+def cmd_setup(args) -> int:
+    present = {name: bool(os.environ.get(spec["env"], "").strip()) for name, spec in PROVIDERS.items()}
+    default = next((name for name in ("typesafe", "openrouter") if present[name]), None)
+    print(json.dumps({
+        "keys_present": present,
+        "default_provider": default,
+        "get_a_key": {"typesafe": "https://console.typesafe.ai/keys",
+                      "openrouter": "https://openrouter.ai/settings/keys"},
+        "note": "Presence only. No network call was made and no key value was read into the output.",
+    }, indent=2))
+    return 0
+
+
+class _Parser(argparse.ArgumentParser):
+    def error(self, message):
+        self.exit(1, json.dumps({"error": message}) + "\n")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = _Parser(prog="prompt2jev", description=__doc__)
+    parser.add_argument("--version", action="version", version=f"prompt2jev {VERSION}")
+    commands = parser.add_subparsers(dest="command", required=True)
+    validate = commands.add_parser("validate", help="Check a request against the contract and lint it")
+    validate.add_argument("request", help="Request JSON file, or - for stdin")
+    validate.add_argument("--strict", action="store_true", help="Exit 1 when any lint warning remains")
+    validate.set_defaults(func=cmd_validate)
+    run = commands.add_parser("run", help="Send a request to Jev and print the response with a report")
+    run.add_argument("request", help="Request JSON file, or - for stdin")
+    run.add_argument("--provider", choices=sorted(PROVIDERS), default="typesafe")
+    run.add_argument("--model", help="Override the request's model id")
+    run.add_argument("--dry-run", action="store_true", help="Validate, lint, and print; no network call")
+    run.add_argument("--timeout", type=float, default=30.0)
+    run.add_argument("--output", help="Also write request, response, and report to this file")
+    run.set_defaults(func=cmd_run)
+    template = commands.add_parser("template", help="Print a bundled archetype request to start from")
+    template.add_argument("archetype", choices=ARCHETYPES)
+    template.set_defaults(func=cmd_template)
+    setup = commands.add_parser("setup", help="Report which provider keys are present; never prints values")
+    setup.set_defaults(func=cmd_setup)
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except (RequestError, ResponseError, TransportError, OSError, json.JSONDecodeError, UnicodeError) as error:
+        print(json.dumps({"error": str(error)}), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
