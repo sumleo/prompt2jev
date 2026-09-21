@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prompt2jev"
+version = "0.1.0"
+description = "Agent skill and CLI that convert LLM prompts into TypeSafe Jev decisions"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "sumleo"}]
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/sumleo/prompt2jev"
+Issues = "https://github.com/sumleo/prompt2jev/issues"
+
+[project.scripts]
+prompt2jev = "prompt2jev:main"
+
+[tool.setuptools]
+py-modules = ["prompt2jev"]
+package-dir = {"" = "skills/prompt2jev/scripts"}
