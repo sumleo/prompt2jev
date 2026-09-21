@@ -146,19 +146,23 @@ LINT_CODES = {"model-alias", "state-too-large", "instructions-too-short", "math-
               "noul-negated", "state-field-unreferenced"}
 STATE_TOKEN_LIMIT = 30_000
 NUMBER_WORDS = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
-_SMALL_NUMBER = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)"
+# A quantity a question might compare against: digits (optionally money) or a small number word.
+# "one" is left out on purpose: "at least one of" is existence, not counting.
+_QUANTITY = r"(?:\$?\d+|two|three|four|five|six|seven|eight|nine|ten)"
 MATH_PATTERN = re.compile(
     r"\b(how many|number of|count (?:how many|the|of|all)|sum of|total of|difference between|"
     r"days since|days ago|weeks ago|older than|newer than|earlier than|later than|"
-    r"more than \d+|greater than|less than|fewer than|over \d+|above \d+|under \d+|below \d+|"
-    r"at least " + _SMALL_NUMBER + r"|at most " + _SMALL_NUMBER + r"|within the (?:last|past) \d+|"
-    r"before \d+|after \d+|percent)\b|\d\s*%",
+    r"greater than|less than|"
+    r"(?:more than|fewer than|over|above|under|below|at least|at most) " + _QUANTITY + r"|"
+    r"within the (?:last|past) \d+|before \d+|after \d+|percent)\b|\d\s*%",
     re.IGNORECASE,
 )
-# Phrases that usually make "yes" mean the condition is absent; a high value would then mean no.
+# Wording that usually makes "yes" mean the condition is absent, so a high value would mean no.
+# Heuristic: "cannot", "no-show", and "not_stated" are deliberately not matched; use --allow for
+# the remaining false positives such as "says the product is not working".
 NEGATION_PATTERN = re.compile(
     r"\b(free of|clean of|devoid of|safe from|exclud(?:e|es|ing)|absent|without|lacks?|lacking|"
-    r"is not|are not|does not|do not|isn't|aren't|doesn't|don't|never)\b",
+    r"not|no(?=\s+\w)|never|(?:isn|aren|doesn|don|hasn|haven|wasn|weren)[\u2019']t)\b",
     re.IGNORECASE,
 )
 COMPOUND_PATTERN = re.compile(r"\sand\s", re.IGNORECASE)
@@ -761,10 +765,22 @@ def cmd_validate(args) -> int:
     return 0
 
 
+def _check_output_path(path: str) -> Path:
+    """Fail before spending money on a --output path that cannot be written."""
+    target = Path(path)
+    if target.is_dir():
+        raise RequestError(f"--output {path} is a directory")
+    parent = target.parent if str(target.parent) else Path(".")
+    if not parent.is_dir() or not os.access(parent, os.W_OK) or (target.exists() and not os.access(target, os.W_OK)):
+        raise RequestError(f"--output {path} is not writable; create the directory first")
+    return target
+
+
 def cmd_run(args) -> int:
     payload = validate_request(read_json(args.request))
     if not 0.1 <= args.timeout <= 300:
         raise RequestError("timeout must be between 0.1 and 300 seconds")
+    output_path = _check_output_path(args.output) if args.output else None
     print_findings(_findings(payload, args.allow))  # lint the model id as written, before provider rewriting
     payload["model"] = resolve_model(payload, args.provider, args.model)
     if args.dry_run:
@@ -783,16 +799,23 @@ def cmd_run(args) -> int:
         output["error"] = f"response did not match the contract: {error}"
         status = 1
     text = json.dumps(output, ensure_ascii=False, indent=2)
-    print(text)  # always print first: the call has been paid for
+    write_error = None
+    if output_path is not None:  # the file first: it survives a consumer that closes stdout early
+        try:
+            output_path.write_text(text + "\n", encoding="utf-8")
+        except OSError as error:
+            write_error = f"writing {args.output} failed: {error}"
+    try:
+        print(text)
+    except BrokenPipeError:
+        if output_path is None or write_error:
+            raise  # nothing else holds the paid response
+        return status
     if status:
         print(json.dumps({"error": output["error"]}), file=sys.stderr)
-    if args.output:
-        try:
-            Path(args.output).write_text(text + "\n", encoding="utf-8")
-        except OSError as error:
-            print(json.dumps({"error": f"response printed above, but writing {args.output} failed: {error}"}),
-                  file=sys.stderr)
-            return 1
+    if write_error:
+        print(json.dumps({"error": f"response printed above, but {write_error}"}), file=sys.stderr)
+        return 1
     return status
 
 

@@ -164,8 +164,13 @@ class LintTests(unittest.TestCase):
                      "Does `ticket.text` mention at least three separate orders?"):
             payload["questions"]["q"]["instructions"] = text
             self.assertIn("math-in-question", self.codes(payload), text)
+        for text in ("Does `ticket.text` mention more than three separate orders?",
+                     "Does `ticket.text` ask for a credit of at least $50?"):
+            payload["questions"]["q"]["instructions"] = text
+            self.assertIn("math-in-question", self.codes(payload), text)
         for text in ("Does `ticket.text` describe an average user experience?",
-                     "Does `ticket.text` say the request should count as a complaint?"):
+                     "Does `ticket.text` say the request should count as a complaint?",
+                     "Does `ticket.text` mention at least one of the listed products?"):
             payload["questions"]["q"]["instructions"] = text
             self.assertNotIn("math-in-question", self.codes(payload), text)
 
@@ -173,6 +178,12 @@ class LintTests(unittest.TestCase):
         payload = request("noul")
         for text in ("Is `ticket.text` clean of personal data?",
                      "Does `ticket.text` exclude any mention of a refund?"):
+            payload["questions"]["q"]["instructions"] = text
+            self.assertIn("noul-negated", self.codes(payload), text)
+        for text in ("Does `ticket.text` not mention a refund?",
+                     "Does `ticket.text` contain no personal data?",
+                     "Is there no mention of a refund in `ticket.text`?",
+                     "Isn\u2019t the customer in `ticket.text` asking for a refund?"):
             payload["questions"]["q"]["instructions"] = text
             self.assertIn("noul-negated", self.codes(payload), text)
         for text in ("Does `ticket.text` mention a no-show at the appointment?",
@@ -484,14 +495,40 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result["report"]["provider"], "typesafe")
         self.assertEqual(json.loads(output.read_text())["response"], choice_response())
 
+    def test_output_path_is_checked_before_sending(self):
+        missing_dir = Path(tempfile.mkdtemp()) / "missing" / "result.json"
+        with patch.object(p2j, "_open", side_effect=AssertionError("network")) as opened:
+            out, err = io.StringIO(), io.StringIO()
+            with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                status = p2j.main(["run", self.write(request()), "--output", str(missing_dir)])
+        self.assertEqual((status, out.getvalue(), opened.call_count), (1, "", 0))
+        self.assertIn("--output", err.getvalue())
+
     def test_run_prints_response_even_when_output_file_fails(self):
         reply = FakeReply(json.dumps(choice_response()).encode())
-        missing_dir = Path(tempfile.mkdtemp()) / "missing" / "result.json"
-        status, out, err = run_cli(["run", self.write(request()), "--output", str(missing_dir)],
-                                   env={"TYPESAFE_API_KEY": "k"}, open_side_effect=[reply])
+        target = Path(tempfile.mkdtemp()) / "result.json"
+        request_file = self.write(request())
+        with patch.object(Path, "write_text", side_effect=OSError("disk full")):
+            status, out, err = run_cli(["run", request_file, "--output", str(target)],
+                                       env={"TYPESAFE_API_KEY": "k"}, open_side_effect=[reply])
         self.assertEqual(status, 1)
         self.assertEqual(json.loads(out)["report"]["questions"]["q"]["value"], "refund")
-        self.assertIn("error", err)
+        self.assertIn("disk full", err)
+
+    def test_output_file_survives_a_broken_stdout(self):
+        class Broken(io.StringIO):
+            def write(self, _text):
+                raise BrokenPipeError(32, "Broken pipe")
+
+        reply = FakeReply(json.dumps(choice_response()).encode())
+        target = Path(tempfile.mkdtemp()) / "result.json"
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                patch.object(p2j, "_open", side_effect=[reply]), \
+                contextlib.redirect_stdout(Broken()), contextlib.redirect_stderr(io.StringIO()):
+            status = p2j.main(["run", self.write(request()), "--output", str(target)])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(target.read_text())["response"], choice_response())
 
     def test_allow_suppresses_a_lint_code(self):
         payload = request("noul")
