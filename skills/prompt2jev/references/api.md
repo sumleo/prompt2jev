@@ -22,10 +22,11 @@ Authorization: Bearer <TYPESAFE_API_KEY>
 Content-Type: application/json
 ```
 
-OpenRouter also serves Jev, with the same body, at
+OpenRouter also serves Jev, with the same request body, at
 `POST https://openrouter.ai/api/alpha/decisions` using `OPENROUTER_API_KEY` and the
 model id `typesafe/jev-1.13`. The bundled CLI selects it with `--provider openrouter`
-and rewrites the known model ids; nothing else changes.
+and rewrites the known model ids. OpenRouter's own limits, pricing, and response
+metadata apply there and are not covered by the TypeSafe docs; check its model page.
 
 ## Request
 
@@ -101,8 +102,10 @@ Aliases move when a release ships. Pin the versioned id once thresholds are tune
 | 429 | Rate limit exceeded | Exponential backoff; honour `retry-after` |
 | 529 | Temporarily overloaded | Exponential backoff |
 
-The official SDKs retry 429 and 529 with backoff by default. The bundled CLI makes
-up to three attempts on those two statuses and never retries anything else.
+The official SDKs retry by default with backoff and honour `Retry-After`: the
+Python and JavaScript clients retry 408, 429, and every 5xx status, plus connection
+and timeout errors. The bundled CLI is narrower: up to three attempts on 429 and
+529 only, and it surfaces the provider's error body (truncated) on anything else.
 
 ## SDK quick shapes
 

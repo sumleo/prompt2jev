@@ -16,9 +16,13 @@
         "not_addressed": "The source does not speak to the claim."
       }
     },
-    "quote_is_verbatim": {
+    "quote_out_of_context": {
       "type": "noul",
-      "instructions": "Does `quote` appear verbatim in `source_context`?"
+      "instructions": "Does the surrounding text in `source_context` qualify or contradict `quote` in a way that changes what `quote` appears to say on its own?",
+      "criteria": {
+        "true": "The context adds a condition, exception, or contrary finding that the quote alone hides.",
+        "false": "The quote means the same thing with or without its surrounding text."
+      }
     },
     "claim_overstates_scope": {
       "type": "noul",

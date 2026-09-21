@@ -2,8 +2,7 @@
   "model": "jev-latest",
   "state": {
     "ticket": {
-      "text": "I placed order #98423 last Thursday and was charged twice. I also can't log in since the site update. Please refund the duplicate charge.",
-      "customer_plan": "enterprise"
+      "text": "I placed order #98423 last Thursday and was charged twice. I also can't log in since the site update. Please refund the duplicate charge."
     }
   },
   "questions": {

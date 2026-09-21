@@ -125,6 +125,42 @@ class LintTests(unittest.TestCase):
         payload["questions"]["q"]["instructions"] = "urgency"
         self.assertIn("instructions-too-short", self.codes(payload))
 
+    def test_fallback_needs_an_exact_fallback_name(self):
+        payload = request()
+        for label in ("not_interested", "no_refund", "none_found_yet"):
+            payload["questions"]["q"]["criteria"] = {"billing": "Charges", label: "A real class"}
+            self.assertIn("choice-no-fallback", self.codes(payload), label)
+        payload["questions"]["q"]["criteria"] = {"billing": "Charges", "other_team": "Some other team"}
+        self.assertNotIn("choice-no-fallback", self.codes(payload))
+
+    def test_math_pattern_edges(self):
+        payload = request("noul")
+        for text in ("Is the order amount in `ticket.text` over 100 USD?",
+                     "Did the purchase in `ticket.text` happen within the last 30 days?",
+                     "Does `ticket.text` mention at least three separate orders?"):
+            payload["questions"]["q"]["instructions"] = text
+            self.assertIn("math-in-question", self.codes(payload), text)
+        for text in ("Does `ticket.text` describe an average user experience?",
+                     "Does `ticket.text` say the request should count as a complaint?"):
+            payload["questions"]["q"]["instructions"] = text
+            self.assertNotIn("math-in-question", self.codes(payload), text)
+
+    def test_negation_pattern_edges(self):
+        payload = request("noul")
+        for text in ("Is `ticket.text` clean of personal data?",
+                     "Does `ticket.text` exclude any mention of a refund?"):
+            payload["questions"]["q"]["instructions"] = text
+            self.assertIn("noul-negated", self.codes(payload), text)
+        for text in ("Does `ticket.text` mention a no-show at the appointment?",
+                     "Does `ticket.text` say the customer cannot log in?"):
+            payload["questions"]["q"]["instructions"] = text
+            self.assertNotIn("noul-negated", self.codes(payload), text)
+
+    def test_state_reference_needs_a_path_boundary(self):
+        payload = request("noul", state={"ticket": {"text": "hi"}, "policy": "Refunds within 30 days."})
+        payload["questions"]["q"]["instructions"] = "Does `ticket_id` look valid?"
+        self.assertIn("state-field-unreferenced", self.codes(payload))
+
     def test_state_field_unreferenced_and_size(self):
         payload = request("noul", state={"ticket": {"text": "hi"}, "policy": "Refunds within 30 days."})
         payload["questions"]["q"]["instructions"] = "Does the customer ask for a refund?"
@@ -163,6 +199,12 @@ class ReportTests(unittest.TestCase):
         row = p2j.build_report(request("score"), response)["questions"]["q"]
         self.assertEqual((row["value"], row["nearest_level"], row["nearest_level_text"], row["band"]),
                          (1.43, 1, "b", "low"))
+
+    def test_score_nearest_level_rounds_half_up(self):
+        response = {"answers": {"q": {"type": "score", "score": 0.5, "confidence": 0.0,
+                                      "legend": {"0": "a", "1": "b", "2": "c"},
+                                      "probabilities": {"0": 0.5, "1": 0.5, "2": 0.0}}}}
+        self.assertEqual(p2j.build_report(request("score"), response)["questions"]["q"]["nearest_level"], 1)
 
     def test_noul_report(self):
         for value, band in ((0.95, "yes"), (0.5, "uncertain"), (0.1, "no")):
@@ -230,6 +272,40 @@ class TransportTests(unittest.TestCase):
             p2j.send(request(), sleep=lambda _: None)
         self.assertEqual(opened.call_count, 3)
 
+    def test_does_not_retry_401_or_connection_errors(self):
+        for failure in (http_error(401), urllib.error.URLError("refused")):
+            with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                    patch.object(p2j, "_open", side_effect=[failure] * 3) as opened, \
+                    self.assertRaises(p2j.TransportError):
+                p2j.send(request(), sleep=lambda _: None)
+            self.assertEqual(opened.call_count, 1, failure)
+
+    def test_non_numeric_retry_after_uses_exponential_backoff(self):
+        waits = []
+        replies = [http_error(429, retry_after="soon"), http_error(529),
+                   FakeReply(json.dumps(choice_response()).encode())]
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                patch.object(p2j, "_open", side_effect=replies):
+            p2j.send(request(), sleep=waits.append)
+        self.assertEqual(waits, [1.0, 2.0])
+
+    def test_error_bodies_are_surfaced_without_the_key(self):
+        body = io.BytesIO(b'{"detail": "questions.q.criteria: field required"}')
+        error = urllib.error.HTTPError("https://api.typesafe.ai/v1/systemone", 422, "err",
+                                       email.message.Message(), body)
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "sk-secret"}, clear=True), \
+                patch.object(p2j, "_open", side_effect=[error]), \
+                self.assertRaises(p2j.TransportError) as caught:
+            p2j.send(request())
+        self.assertIn("criteria: field required", str(caught.exception))
+        self.assertNotIn("sk-secret", str(caught.exception))
+        reply = FakeReply(b'{"error": {"message": "model not found"}}')
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                patch.object(p2j, "_open", return_value=reply), \
+                self.assertRaises(p2j.TransportError) as caught:
+            p2j.send(request())
+        self.assertIn("model not found", str(caught.exception))
+
     def test_does_not_retry_422(self):
         with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
                 patch.object(p2j, "_open", side_effect=[http_error(422)]) as opened, \
@@ -262,6 +338,12 @@ class AssetTests(unittest.TestCase):
                 self.assertEqual([f for f in findings if f["level"] != "info"], [], findings)
                 self.assertGreaterEqual(len(payload["questions"]), 3)
                 self.assertIsInstance(payload["state"], dict)
+                referenced = json.dumps(payload["questions"])
+                for key, value in payload["state"].items():
+                    nested = value.keys() if isinstance(value, dict) else [None]
+                    for sub in nested:
+                        path = f"`{key}" if sub is None else f"`{key}.{sub}"
+                        self.assertIn(path, referenced, f"{name}: state field {path} is unused")
 
     def test_bundled_templates_match_asset_files(self):
         self.assertEqual(set(p2j.TEMPLATES), set(p2j.ARCHETYPES))
@@ -316,6 +398,27 @@ class CliTests(unittest.TestCase):
         self.assertEqual(result["report"]["questions"]["q"]["value"], "refund")
         self.assertEqual(result["report"]["provider"], "typesafe")
         self.assertEqual(json.loads(output.read_text())["response"], choice_response())
+
+    def test_run_prints_response_even_when_output_file_fails(self):
+        reply = FakeReply(json.dumps(choice_response()).encode())
+        missing_dir = Path(tempfile.mkdtemp()) / "missing" / "result.json"
+        status, out, err = run_cli(["run", self.write(request()), "--output", str(missing_dir)],
+                                   env={"TYPESAFE_API_KEY": "k"}, open_side_effect=[reply])
+        self.assertEqual(status, 1)
+        self.assertEqual(json.loads(out)["report"]["questions"]["q"]["value"], "refund")
+        self.assertIn("error", err)
+
+    def test_allow_suppresses_a_lint_code(self):
+        payload = request("noul")
+        payload["questions"]["q"]["instructions"] = "Does `ticket.text` accept the terms and conditions?"
+        status, _, err = run_cli(["validate", self.write(payload), "--strict"])
+        self.assertEqual(status, 1)
+        self.assertIn("noul-compound", err)
+        status, _, err = run_cli(["validate", self.write(payload), "--strict", "--allow", "noul-compound"])
+        self.assertEqual(status, 0)
+        self.assertNotIn("noul-compound", err)
+        status, _, _ = run_cli(["validate", self.write(payload), "--strict", "--allow", "not-a-code"])
+        self.assertEqual(status, 1)
 
     def test_run_without_key_fails_cleanly(self):
         status, out, err = run_cli(["run", self.write(request())])

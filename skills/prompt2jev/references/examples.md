@@ -2,7 +2,8 @@
 
 Four prompt shapes that come up constantly, each converted end to end. Every request
 below passes `prompt2jev validate --strict`. The matching archetype under `assets/`
-is the file to copy.
+is the file to copy. These examples pin `jev-1.13.0` to show the form a tuned
+integration uses; a fresh conversion starts with `jev-latest` and pins later.
 
 ## Contents
 

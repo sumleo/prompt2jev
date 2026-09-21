@@ -2,7 +2,6 @@
   "model": "jev-latest",
   "state": {
     "pull_request": {
-      "title": "Fix null check in payment handler",
       "description": "Fixed the null check in the payment handler. Also refactored the retry loop while I was in there, and bumped the SDK version since the old one had that timeout bug. Ran the unit tests locally.",
       "changed_files": ["payments/handler.py", "payments/retry.py", "requirements.txt"]
     }

@@ -33,6 +33,10 @@ class SkillFileTests(unittest.TestCase):
         for trigger in ("prompt", "Jev", "TypeSafe", "System One"):
             self.assertIn(trigger, description)
         self.assertNotIn(" I ", description)
+        # An unquoted YAML scalar breaks on ": " and on a leading quote or hash.
+        self.assertNotIn(": ", description)
+        self.assertNotIn(" #", description)
+        self.assertFalse(description.startswith(('"', "'", "[", "{", "&", "*", "!", "|", ">", "%", "@", "`")))
 
     def test_length_and_sections(self):
         self.assertLess(len(self.text.splitlines()), 300)

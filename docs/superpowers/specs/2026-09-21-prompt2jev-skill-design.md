@@ -86,7 +86,7 @@ prompt2jev/
 
 Standard library only, Python 3.10+. Commands:
 
-- `validate <request.json> [--strict]`: schema validation against the documented contract, then best-practice lint. Prints the normalized request. Exit 0 when valid; lint warnings go to stderr; `--strict` turns warnings into exit 1.
+- `validate <request.json> [--strict] [--allow CODE ...]`: schema validation against the documented contract, then best-practice lint. Prints the normalized request. Exit 0 when valid; lint warnings go to stderr; `--strict` turns warnings into exit 1; `--allow` suppresses a named lint code the author has judged a false positive for this request (unknown codes are an error).
 - `run <request.json> [--provider typesafe|openrouter] [--model ID] [--dry-run] [--timeout S] [--output FILE]`: sends the request and prints the raw response plus a per-question report. `--dry-run` validates and prints the request without a network call.
 - `template <archetype>`: prints a bundled asset (`classify-route`, `checklist-guardrail`, `rubric-composite`, `extract-select`, `verify-claim`) as a starting point.
 - `setup`: reports key presence (never values) and the provider each key enables.
@@ -95,11 +95,11 @@ Lint checks (warnings unless noted):
 
 | Check | Trigger |
 |---|---|
-| `choice-no-fallback` | Choice with no option named `other`, `none`, `unknown`, `not_stated`, `insufficient_evidence`, `none_of_the_above`, or `not_applicable` |
+| `choice-no-fallback` | Choice with no option whose exact name is a known fallback (`other`, `none`, `unknown`, `not_stated`, `not_applicable`, `not_addressed`, `none_of_the_above`, `no_match`, `insufficient_evidence`, `unclear`, `ask_user`, `review`, `abstain`) or starts with `other` |
 | `score-numeric-levels` | Any Score level whose text is only digits or a bare number word |
-| `score-degree-only` | Score level shorter than 12 characters (for example "Low", "High") |
-| `noul-compound` | Noul instructions containing " and " or " or " between two clauses |
-| `noul-negated` | Noul instructions containing "not ", "free of", "without", "no " as the main verb phrase |
+| `score-degree-only` | Score level shorter than 10 characters (for example "Low", "High"; the docs' own "Very angry" passes) |
+| `noul-compound` | Noul instructions containing " and " (" or " is allowed: the docs use it inside single propositions) |
+| `noul-negated` | Noul instructions containing an inverting phrase such as "free of", "clean of", "without", "exclude", "is not", "does not", "never" |
 | `instructions-too-short` | Instructions under 12 characters, or a single word |
 | `state-field-unreferenced` | Object state with 2+ top-level fields, and no question references any field by backticked path (soft) |
 | `state-too-large` | Estimated tokens of state above 30,000 (4 chars per token) |

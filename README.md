@@ -133,7 +133,8 @@ Archetypes for `template`: `classify-route`, `checklist-guardrail`,
 Lint checks: missing fallback option on a Choice, numeric or degree-only Score
 levels, compound or negated Nouls, arithmetic or date logic inside a question,
 instructions too short to stand alone, state fields no question references, state
-over the model's budget, and a moving model alias.
+over the model's budget, and a moving model alias. The checks are heuristics;
+`--allow CODE` suppresses one you have judged a false positive for a given request.
 
 ## Keys
 

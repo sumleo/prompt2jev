@@ -146,7 +146,10 @@ python3 <skill-dir>/scripts/prompt2jev.py run request.json --dry-run
 
 `validate` checks the contract and lints against the rules above (fallback option,
 numeric levels, compound or negated Nouls, math in a question, unreferenced state
-fields, oversized state). Fix every warning or say why it stands. With a key present
+fields, oversized state). The lint is heuristic: fix every warning, or when a
+question is right as written (a closed set such as months needs no fallback; "terms
+and conditions" is one phrase), suppress that code with `--allow CODE` and say why
+in part 5. With a key present
 and the user's approval, run a small labeled sample, then tune thresholds on it and
 evaluate on held-out cases. Write fixtures for each branch, including inputs where
 the model should abstain.
