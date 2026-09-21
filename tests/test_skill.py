@@ -164,5 +164,67 @@ class ExampleTests(unittest.TestCase):
             self.assertIn("examples/triage", text)
 
 
+class VideoTests(unittest.TestCase):
+    """video/composition/index.html is the source of the README video; its on-screen text must stay the
+    example's text, so a change to examples/triage fails here until the video is updated and re-rendered."""
+    folder = ROOT / "video"
+
+    @classmethod
+    def screen_text(cls):
+        html = (cls.folder / "composition" / "index.html").read_text(encoding="utf-8")
+        body = html.split("<body>", 1)[1].split("<script>", 1)[0]
+        text = re.sub(r"<[^>]+>", "", body)
+        for entity, char in (("&gt;", ">"), ("&lt;", "<"), ("&quot;", '"'), ("&amp;", "&")):
+            text = text.replace(entity, char)
+        return text
+
+    def test_prompt_questions_and_commands_are_on_screen(self):
+        text = self.screen_text()
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        prompt = re.search(r'"(Classify the support ticket into .*?Output JSON only\.)"', readme, re.S).group(1)
+        self.assertIn(" ".join(prompt.split()), " ".join(text.split()))
+        payload = json.loads((self.folder.parent / "examples" / "triage" / "request.json").read_text(encoding="utf-8"))
+        for qid, question in payload["questions"].items():
+            self.assertIn(qid, text)
+            self.assertIn(question["type"], text)
+            self.assertIn(question["instructions"], text)
+        for option in payload["questions"]["team"]["criteria"]:
+            self.assertIn(option, text)
+        for command in ("prompt2jev validate request.json --strict",
+                        "prompt2jev code request.json --lang python --output triage.py", "python3 triage.py"):
+            self.assertIn(command, (self.folder / "composition" / "index.html").read_text(encoding="utf-8"), command)
+        for lang in ("--lang python", "javascript", "python-stdlib", "curl"):
+            self.assertIn(lang, text)
+
+    def test_script_lines_and_output_values_are_the_example_files(self):
+        text = self.screen_text()
+        script = (self.folder.parent / "examples" / "triage" / "triage.py").read_text(encoding="utf-8")
+        for line in ("# ----- Constants: every threshold in one place -----", "def decide(state) -> dict:",
+                     "    response = ask(state)", "    answers = response.answers"):
+            self.assertIn(line, script, line)
+            self.assertIn(line, text, line)
+        for prefix in ("from typesafe_sdk import ", "CONFIDENCE_FLOOR = ", "NOUL_YES = ", "NOUL_NO = "):
+            line = next(l for l in script.splitlines() if l.startswith(prefix))
+            self.assertIn(line, text, line)
+        for qid in ("team", "urgent", "refund_requested"):
+            line = next(l for l in script.splitlines() if l.strip().startswith(qid + " = read_"))
+            self.assertIn(line, text, line)
+        output = json.loads((self.folder.parent / "examples" / "triage" / "output.json").read_text(encoding="utf-8"))
+        self.assertIn(output["model"], text)
+        team = output["team"]
+        self.assertIn(f"P({team['choice']}) {team['probabilities'][team['choice']]:.2f} · confidence {team['confidence']:.2f}", text)
+        for qid in ("urgent", "refund_requested"):
+            self.assertIn(f"P(yes) {output[qid]['noul']:.2f} · band {output[qid]['band']}", text)
+
+    def test_readmes_link_the_rendered_video(self):
+        for name in ("README.md", "README.zh.md"):
+            readme = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn("](video/prompt2jev-walkthrough-poster.jpg)](video/prompt2jev-walkthrough.mp4)", readme, name)
+            self.assertIn("video/README.md", readme, name)
+        self.assertTrue((self.folder / "prompt2jev-walkthrough.mp4").stat().st_size > 1_000_000)
+        self.assertTrue((self.folder / "prompt2jev-walkthrough-poster.jpg").stat().st_size > 10_000)
+        self.assertIn("prompt2jev-walkthrough.mp4", (self.folder / "README.md").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()

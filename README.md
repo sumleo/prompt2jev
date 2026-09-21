@@ -10,9 +10,9 @@ English · [简体中文](README.zh.md)
 
 [Overview](#overview) · [Contents](#contents) · [Install](#install)
 
-[![Watch: one support-ticket prompt becomes three typed questions, a generated script, and real probabilities, in 23 seconds](docs/assets/brag.jpg)](docs/assets/brag.mp4)
+[![Watch: one support-ticket prompt becomes three typed questions, a generated script, and real probabilities, in 23 seconds](video/prompt2jev-walkthrough-poster.jpg)](video/prompt2jev-walkthrough.mp4)
 
-*23 seconds, no narration: [the end-to-end example](#example) from prompt to real answers. Click the poster to play.*
+*23 seconds, no narration: [the end-to-end example](#example) from prompt to real answers. Click the poster to play; the source is in [`video/`](video/README.md).*
 
 </div>
 
@@ -519,7 +519,7 @@ skills/prompt2jev/
 examples/triage/        the end-to-end example above: request, generated script, real output
 docs/                   TypeSafe docs mirror the references were written from
 docs/install.md         the agent-driven install guide
-docs/assets/            the README video (brag.mp4) and its poster frame (brag.jpg)
+video/                  the README video: rendered prompt2jev-walkthrough.mp4 and poster, plan, and the Hyperframes source
 tests/                  unittest suite: python3 -m unittest discover -s tests -v
 ```
 

@@ -10,9 +10,9 @@
 
 [概览](#overview) · [目录](#contents) · [安装](#install)
 
-[![观看：一条工单提示词在 23 秒内变成三个类型化问题、一个生成的脚本和真实的概率](docs/assets/brag.jpg)](docs/assets/brag.mp4)
+[![观看：一条工单提示词在 23 秒内变成三个类型化问题、一个生成的脚本和真实的概率](video/prompt2jev-walkthrough-poster.jpg)](video/prompt2jev-walkthrough.mp4)
 
-*23 秒无旁白：[端到端示例](#example)从提示词到真实答案的全过程。点击封面播放。*
+*23 秒无旁白：[端到端示例](#example)从提示词到真实答案的全过程。点击封面播放；源文件在 [`video/`](video/README.md)。*
 
 </div>
 
@@ -506,7 +506,7 @@ skills/prompt2jev/
 examples/triage/        上面的端到端示例：请求、生成的脚本、真实输出
 docs/                   编写参考资料所依据的 TypeSafe 文档镜像
 docs/install.md         由 Agent 执行的安装指南
-docs/assets/            README 里的视频（brag.mp4）和它的封面帧（brag.jpg）
+video/                  README 里的视频：渲染好的 prompt2jev-walkthrough.mp4 和封面帧、分镜计划、Hyperframes 源文件
 tests/                  unittest 测试套件：python3 -m unittest discover -s tests -v
 ```
 
