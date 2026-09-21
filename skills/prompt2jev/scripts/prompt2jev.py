@@ -32,6 +32,8 @@ MODEL_ALIASES = {
 }
 MOVING_ALIASES = {"jev-latest", "jev-preview"}
 QUESTION_TYPES = ("choice", "score", "noul")
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
+ARCHETYPES = ("classify-route", "checklist-guardrail", "rubric-composite", "extract-select", "verify-claim")
 
 
 class RequestError(ValueError):

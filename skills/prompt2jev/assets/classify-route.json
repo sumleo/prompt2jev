@@ -1,0 +1,71 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "ticket": {
+      "text": "I placed order #98423 last Thursday and was charged twice. I also can't log in since the site update. Please refund the duplicate charge.",
+      "customer_plan": "enterprise"
+    }
+  },
+  "questions": {
+    "category": {
+      "type": "choice",
+      "instructions": {
+        "question": "Which team should handle `ticket.text`?",
+        "focus": "Classify the customer's primary request, not every topic mentioned."
+      },
+      "criteria": {
+        "billing": {
+          "what": "Charges, invoices, refunds, or subscriptions",
+          "not_for": "Order tracking or account access",
+          "examples": ["I was charged twice", "Where is my refund?"]
+        },
+        "shipping": {
+          "what": "Delivery status, delays, lost or damaged packages",
+          "not_for": "Charges or login problems",
+          "examples": ["Where is my package?", "It arrived broken"]
+        },
+        "account": {
+          "what": "Login, password, profile, permissions, or security",
+          "not_for": "Charges or delivery",
+          "examples": ["I can't sign in", "Change my email"]
+        },
+        "bug": {
+          "what": "A product feature that is broken or producing errors",
+          "not_for": "Login problems or billing errors",
+          "examples": ["The export button crashes", "Search returns nothing"]
+        },
+        "feature_request": {
+          "what": "A request for functionality that does not exist yet",
+          "not_for": "Something that used to work",
+          "examples": ["Please add Apple Pay", "Can you support dark mode?"]
+        },
+        "other": "None of the listed teams fits, or the message is not a support request."
+      }
+    },
+    "refund_requested": {
+      "type": "noul",
+      "instructions": "Does the customer in `ticket.text` explicitly ask for money back or an account credit?",
+      "criteria": {
+        "true": "Directly asks for a refund, a reversal of a charge, or a credit.",
+        "false": "Complains about a charge without asking for money back, or asks about something else."
+      }
+    },
+    "blocks_work": {
+      "type": "noul",
+      "instructions": "Does `ticket.text` say the customer currently cannot use the product or complete a purchase?"
+    },
+    "frustration": {
+      "type": "score",
+      "instructions": {
+        "question": "How frustrated does the customer appear in `ticket.text`?",
+        "focus": "Judge expressed frustration, not the severity of the issue."
+      },
+      "criteria": [
+        "Calm and matter-of-fact; neutral wording with no complaint about the experience.",
+        "Frustrated but civil; expresses annoyance and stays constructive.",
+        "Very angry; hostile language or threatens to cancel or leave.",
+        "Abusive or threatening toward staff."
+      ]
+    }
+  }
+}

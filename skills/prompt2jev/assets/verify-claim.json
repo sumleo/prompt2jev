@@ -1,0 +1,28 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "claim": "The 2024 survey found that most remote employees reported higher productivity than in the office.",
+    "quote": "62% of remote respondents said they got more done at home than at their desk.",
+    "source_context": "Survey of 1,204 remote and hybrid workers, conducted in March 2024. Asked to compare output, 62% of remote respondents said they got more done at home than at their desk, 21% said about the same, and 17% said less. Hybrid respondents were split evenly."
+  },
+  "questions": {
+    "support": {
+      "type": "choice",
+      "instructions": "Does `source_context` support `claim` as stated?",
+      "criteria": {
+        "supported": "The source states the claim or a fact that directly entails it.",
+        "partially_supported": "The source supports part of the claim but the claim adds scope, certainty, or detail the source lacks.",
+        "contradicted": "The source states something incompatible with the claim.",
+        "not_addressed": "The source does not speak to the claim."
+      }
+    },
+    "quote_is_verbatim": {
+      "type": "noul",
+      "instructions": "Does `quote` appear verbatim in `source_context`?"
+    },
+    "claim_overstates_scope": {
+      "type": "noul",
+      "instructions": "Does `claim` generalize beyond the population or conditions described in `source_context`?"
+    }
+  }
+}

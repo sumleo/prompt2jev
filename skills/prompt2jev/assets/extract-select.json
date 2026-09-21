@@ -1,0 +1,48 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "source_text": "Invoice #4471 issued March 3, 2026 to Beaver Dam Logistics for $12,840.00, net 30. Reference PO-8812.",
+    "candidates": {
+      "invoice_number": ["4471", "8812", "2026"],
+      "customer_name": ["Beaver Dam Logistics", "Dam Logistics", "Beaver"]
+    }
+  },
+  "questions": {
+    "invoice_number": {
+      "type": "choice",
+      "instructions": {
+        "field": {
+          "name": "invoice_number",
+          "description": "The identifier printed on the invoice itself, not a purchase order, date, or amount."
+        },
+        "question": "Which option in `candidates.invoice_number` is the value of `field` in `source_text`?"
+      },
+      "criteria": {
+        "4471": null,
+        "8812": null,
+        "2026": null,
+        "not_stated": "None of the candidates is the invoice number."
+      }
+    },
+    "customer_name": {
+      "type": "choice",
+      "instructions": {
+        "field": {
+          "name": "customer_name",
+          "description": "The full name of the organization the invoice was issued to."
+        },
+        "question": "Which option in `candidates.customer_name` is the complete value of `field` in `source_text`?"
+      },
+      "criteria": {
+        "Beaver Dam Logistics": null,
+        "Dam Logistics": null,
+        "Beaver": null,
+        "not_stated": "None of the candidates is the complete customer name."
+      }
+    },
+    "payment_terms_stated": {
+      "type": "noul",
+      "instructions": "Does `source_text` state payment terms such as net 30 or due on receipt?"
+    }
+  }
+}
