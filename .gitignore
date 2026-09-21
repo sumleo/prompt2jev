@@ -1,14 +1,39 @@
+# Secrets
 .env
 .env.*
 !.env.example
-.venv/
+
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
-dist/
+.venv/
+venv/
 build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node (only if a generated .mjs example is ever run locally)
+node_modules/
+
+# Editors and OS
 .DS_Store
+Thumbs.db
 .idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local agent workspaces: skills installed into this checkout, not part of the project
 .agents/
 .claude/
+.codex/
+.cursor/
 .opencode/
+skills-lock.json
+brag-output/
