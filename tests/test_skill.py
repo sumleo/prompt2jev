@@ -112,6 +112,20 @@ class RepoDocTests(unittest.TestCase):
             self.assertIn(phrase, chinese, phrase)
         for name in ARCHETYPES:
             self.assertIn(name, chinese, name)
+        anchors = re.findall(r'<a id="([^"]+)"></a>', readme)
+        self.assertEqual(anchors, re.findall(r'<a id="([^"]+)"></a>', chinese))
+        for anchor in ("overview", "contents", "install", "usage", "package", "catalog", "cli", "io",
+                       "habits", "pitfalls", "credits"):
+            self.assertIn(anchor, anchors)
+            self.assertIn(f"](#{anchor})", readme)
+        for text in (readme, chinese):
+            positions = [text.index(f'<a id="{a}"></a>') for a in ("overview", "contents", "install", "usage")]
+            self.assertEqual(positions, sorted(positions))
+            blocks = re.findall(r"```json\n(.*?)\n```", text, re.S)
+            for block in blocks:
+                payload = json.loads(block)
+                findings = p2j.lint_request(p2j.validate_request(payload))
+                self.assertEqual([f for f in findings if f["level"] == "warning"], [])
         plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
         marketplace = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
         self.assertEqual(plugin["name"], "prompt2jev")
