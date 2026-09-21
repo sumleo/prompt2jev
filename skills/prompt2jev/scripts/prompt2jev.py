@@ -302,3 +302,84 @@ def build_report(payload: dict, response: dict) -> dict:
     return {"model": response.get("model"), "usage": response.get("usage"), "questions": rows,
             "thresholds": {**THRESHOLDS, "note": "Illustrative defaults. Tune on your own labeled data; "
                                                  "a band is not permission to act."}}
+
+
+# ----- Transport -----
+
+RETRY_STATUSES = {429, 529}
+MAX_ATTEMPTS = 3
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # never forward the Authorization header to another host
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(request: urllib.request.Request, timeout: float):
+    return _OPENER.open(request, timeout=timeout)
+
+
+def _api_key(provider: str) -> str:
+    env = PROVIDERS[provider]["env"]
+    key = os.environ.get(env, "").strip()
+    if not key:
+        raise TransportError(f"Set {env} in the environment that runs this command (see: prompt2jev setup)")
+    if any(not 33 <= ord(character) <= 126 for character in key):
+        raise TransportError(f"{env} contains whitespace or non-ASCII characters")
+    return key
+
+
+def _backoff(attempt: int, retry_after) -> float:
+    try:
+        return max(0.0, min(float(retry_after), 60.0))
+    except (TypeError, ValueError):
+        return float(2 ** (attempt - 1))
+
+
+def _hint(status: int) -> str:
+    return {401: "; check the API key",
+            422: "; the request failed server-side validation, re-run validate",
+            429: "; rate limited after retries",
+            529: "; service overloaded after retries"}.get(status, "")
+
+
+def send(payload: dict, provider: str = "typesafe", timeout: float = 30.0, sleep=time.sleep) -> dict:
+    """POST the request. Retries 429 and 529 with backoff up to MAX_ATTEMPTS; never retries 401 or 422."""
+    if provider not in PROVIDERS:
+        raise TransportError("provider must be typesafe or openrouter")
+    key = _api_key(provider)
+    body = json.dumps(payload, allow_nan=False).encode("utf-8")
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        request = urllib.request.Request(
+            PROVIDERS[provider]["url"], data=body, method="POST",
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                     "User-Agent": f"prompt2jev/{VERSION}"})
+        try:
+            with _open(request, timeout) as reply:
+                result = load_json(reply.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            status = error.code
+            retry_after = error.headers.get("retry-after") if error.headers else None
+            error.close()
+            if status in RETRY_STATUSES and attempt < MAX_ATTEMPTS:
+                sleep(_backoff(attempt, retry_after))
+                continue
+            raise TransportError(f"{provider} returned HTTP {status}{_hint(status)}", status=status) from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            raise TransportError(f"{provider} connection failed or timed out") from None
+        except (json.JSONDecodeError, UnicodeError, RequestError):
+            raise TransportError(f"{provider} returned invalid JSON") from None
+        if not isinstance(result, dict) or "error" in result:
+            raise TransportError(f"{provider} returned an error object")
+        return result
+    raise TransportError(f"{provider} did not answer after {MAX_ATTEMPTS} attempts")
+
+
+def resolve_model(payload: dict, provider: str, override: str | None) -> str:
+    if override:
+        return override
+    model = payload.get("model") or os.environ.get("JEV_MODEL") or PROVIDERS[provider]["model"]
+    return MODEL_ALIASES[provider].get(model, model)

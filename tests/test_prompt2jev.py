@@ -1,9 +1,11 @@
 import contextlib
+import email.message
 import io
 import json
 import os
 import sys
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -179,6 +181,73 @@ class ReportTests(unittest.TestCase):
         del response["answers"]["q"]["probabilities"]["other"]
         with self.assertRaises(p2j.ResponseError):
             p2j.build_report(request(), response)
+
+
+class FakeReply(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+
+def http_error(status, retry_after=None):
+    headers = email.message.Message()
+    if retry_after is not None:
+        headers["retry-after"] = str(retry_after)
+    return urllib.error.HTTPError("https://api.typesafe.ai/v1/systemone", status, "err", headers,
+                                  io.BytesIO(b"{}"))
+
+
+class TransportTests(unittest.TestCase):
+    def test_requires_key_and_never_prints_it(self):
+        with patch.dict("os.environ", {}, clear=True), self.assertRaises(p2j.TransportError) as caught:
+            p2j.send(request())
+        self.assertIn("TYPESAFE_API_KEY", str(caught.exception))
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "sk-secret"}, clear=True), \
+                patch.object(p2j, "_open", side_effect=http_error(401)), \
+                self.assertRaises(p2j.TransportError) as caught:
+            p2j.send(request())
+        self.assertNotIn("sk-secret", str(caught.exception))
+        self.assertEqual(caught.exception.status, 401)
+
+    def test_retries_429_and_honours_retry_after(self):
+        waits = []
+        replies = [http_error(429, retry_after=2), FakeReply(json.dumps(choice_response()).encode())]
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                patch.object(p2j, "_open", side_effect=replies) as opened:
+            result = p2j.send(request(), sleep=waits.append)
+        self.assertEqual(result["answers"]["q"]["choice"], "refund")
+        self.assertEqual((opened.call_count, waits), (2, [2.0]))
+
+    def test_gives_up_after_three_attempts(self):
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                patch.object(p2j, "_open", side_effect=[http_error(529)] * 3) as opened, \
+                self.assertRaises(p2j.TransportError):
+            p2j.send(request(), sleep=lambda _: None)
+        self.assertEqual(opened.call_count, 3)
+
+    def test_does_not_retry_422(self):
+        with patch.dict("os.environ", {"TYPESAFE_API_KEY": "k"}, clear=True), \
+                patch.object(p2j, "_open", side_effect=[http_error(422)]) as opened, \
+                self.assertRaises(p2j.TransportError):
+            p2j.send(request(), sleep=lambda _: None)
+        self.assertEqual(opened.call_count, 1)
+
+    def test_openrouter_uses_its_key_and_url(self):
+        reply = FakeReply(json.dumps(choice_response()).encode())
+        with patch.dict("os.environ", {"OPENROUTER_API_KEY": "k"}, clear=True), \
+                patch.object(p2j, "_open", return_value=reply) as opened:
+            p2j.send(request(), provider="openrouter")
+        sent = opened.call_args.args[0]
+        self.assertEqual(sent.full_url, p2j.PROVIDERS["openrouter"]["url"])
+        self.assertEqual(sent.get_header("Authorization"), "Bearer k")
+
+    def test_resolve_model(self):
+        self.assertEqual(p2j.resolve_model(request(), "openrouter", None), "typesafe/jev-1.13")
+        self.assertEqual(p2j.resolve_model(request(model="typesafe/jev-1.13"), "typesafe", None), "jev-1.13.0")
+        self.assertEqual(p2j.resolve_model(request(), "typesafe", "jev-1.13.0"), "jev-1.13.0")
+        self.assertEqual(p2j.resolve_model(request(model="custom"), "openrouter", None), "custom")
 
 
 if __name__ == "__main__":
