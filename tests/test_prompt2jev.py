@@ -130,5 +130,56 @@ class LintTests(unittest.TestCase):
         self.assertIn("state-too-large", self.codes(payload))
 
 
+def choice_response(label="refund", probability=0.9, confidence=0.8):
+    return {"model": "jev-1.13.0", "usage": {"input_tokens": 10, "output_tokens": 2},
+            "answers": {"q": {"type": "choice", "choice": label,
+                              "probabilities": {"refund": probability, "other": round(1 - probability, 4)},
+                              "confidence": confidence}}}
+
+
+class ReportTests(unittest.TestCase):
+    def test_choice_report(self):
+        report = p2j.build_report(request(), choice_response())
+        row = report["questions"]["q"]
+        self.assertEqual((row["value"], row["probability"], row["band"]), ("refund", 0.9, "high"))
+        self.assertAlmostEqual(row["margin"], 0.8)
+        self.assertEqual(report["model"], "jev-1.13.0")
+        self.assertIn("Tune", report["thresholds"]["note"])
+
+    def test_bands(self):
+        medium = p2j.build_report(request(), choice_response(confidence=0.6))["questions"]["q"]["band"]
+        low = p2j.build_report(request(), choice_response(confidence=0.2))["questions"]["q"]["band"]
+        self.assertEqual((medium, low), ("medium", "low"))
+
+    def test_score_report(self):
+        response = {"answers": {"q": {"type": "score", "score": 1.43, "confidence": 0.35,
+                                      "legend": {"0": "a", "1": "b", "2": "c"},
+                                      "probabilities": {"0": 0.0, "1": 0.57, "2": 0.43}}}}
+        row = p2j.build_report(request("score"), response)["questions"]["q"]
+        self.assertEqual((row["value"], row["nearest_level"], row["nearest_level_text"], row["band"]),
+                         (1.43, 1, "b", "low"))
+
+    def test_noul_report(self):
+        for value, band in ((0.95, "yes"), (0.5, "uncertain"), (0.1, "no")):
+            response = {"answers": {"q": {"type": "noul", "noul": value}}}
+            self.assertEqual(p2j.build_report(request("noul"), response)["questions"]["q"]["band"], band)
+
+    def test_rejects_bad_responses(self):
+        bad = [{}, {"answers": {}}, {"answers": {"q": {"type": "score"}}}, choice_response("missing"),
+               choice_response(probability=float("nan")), choice_response(probability=1.5),
+               choice_response("other", 0.9)]
+        for response in bad:
+            with self.subTest(response=response), self.assertRaises(p2j.ResponseError):
+                p2j.build_report(request(), response)
+        response = choice_response()
+        response["answers"]["q"]["probabilities"] = {"refund": 1.0, "other": 0.5}
+        with self.assertRaises(p2j.ResponseError):
+            p2j.build_report(request(), response)
+        response = choice_response()
+        del response["answers"]["q"]["probabilities"]["other"]
+        with self.assertRaises(p2j.ResponseError):
+            p2j.build_report(request(), response)
+
+
 if __name__ == "__main__":
     unittest.main()

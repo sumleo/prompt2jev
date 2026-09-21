@@ -219,3 +219,86 @@ def lint_request(payload: dict) -> list[dict]:
         add("state-field-unreferenced", "state has several fields but no question names one with a "
             "backticked path such as `ticket.text`.")
     return findings
+
+
+# ----- Response validation and run report -----
+
+# Illustrative defaults for the run report. Tune on held-out data; a band is never permission to act.
+THRESHOLDS = {"confidence_high": 0.8, "confidence_low": 0.5, "noul_yes": 0.8, "noul_no": 0.2}
+
+
+def _number(value, low, high, name):
+    if (isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+            or not low <= value <= high):
+        raise ResponseError(f"{name} must be a finite number in [{low}, {high}]")
+    return value
+
+
+def _distribution(answer: dict, labels, qid: str) -> dict:
+    probabilities = answer.get("probabilities")
+    if not isinstance(probabilities, dict) or set(probabilities) != set(labels):
+        raise ResponseError(f"{qid}: probabilities must cover exactly the request's options")
+    for value in probabilities.values():
+        _number(value, 0, 1, f"{qid} probability")
+    if not math.isclose(sum(probabilities.values()), 1, abs_tol=0.02 + 0.001 * len(probabilities)):
+        raise ResponseError(f"{qid}: probabilities must sum to 1")
+    _number(answer.get("confidence"), 0, 1, f"{qid} confidence")
+    return probabilities
+
+
+def validate_response(payload: dict, response) -> dict:
+    if not isinstance(response, dict) or not isinstance(response.get("answers"), dict):
+        raise ResponseError("response must be an object with an answers map")
+    answers = response["answers"]
+    for qid, question in payload["questions"].items():
+        answer = answers.get(qid)
+        kind = question["type"]
+        if not isinstance(answer, dict) or answer.get("type") != kind:
+            raise ResponseError(f"{qid}: missing answer or wrong answer type")
+        if kind == "choice":
+            probabilities = _distribution(answer, question["criteria"], qid)
+            choice = answer.get("choice")
+            if choice not in probabilities or probabilities[choice] != max(probabilities.values()):
+                raise ResponseError(f"{qid}: choice must be the highest-probability option")
+        elif kind == "score":
+            levels = [str(index) for index in range(len(question["criteria"]))]
+            _distribution(answer, levels, qid)
+            legend = answer.get("legend")
+            if not isinstance(legend, dict) or set(legend) != set(levels):
+                raise ResponseError(f"{qid}: legend must map every level index")
+            _number(answer.get("score"), 0, len(levels) - 1, f"{qid} score")
+        else:
+            _number(answer.get("noul"), 0, 1, f"{qid} noul")
+    return answers
+
+
+def _band(value: float) -> str:
+    if value >= THRESHOLDS["confidence_high"]:
+        return "high"
+    return "low" if value < THRESHOLDS["confidence_low"] else "medium"
+
+
+def build_report(payload: dict, response: dict) -> dict:
+    answers = validate_response(payload, response)
+    rows = {}
+    for qid, question in payload["questions"].items():
+        answer, kind = answers[qid], question["type"]
+        if kind == "choice":
+            ranked = sorted(answer["probabilities"].values(), reverse=True)
+            rows[qid] = {"type": kind, "value": answer["choice"],
+                         "probability": answer["probabilities"][answer["choice"]],
+                         "margin": round(ranked[0] - ranked[1], 4),
+                         "confidence": answer["confidence"], "band": _band(answer["confidence"])}
+        elif kind == "score":
+            nearest = int(round(answer["score"]))
+            rows[qid] = {"type": kind, "value": answer["score"], "nearest_level": nearest,
+                         "nearest_level_text": answer["legend"][str(nearest)],
+                         "confidence": answer["confidence"], "band": _band(answer["confidence"])}
+        else:
+            noul = answer["noul"]
+            band = ("yes" if noul >= THRESHOLDS["noul_yes"]
+                    else "no" if noul <= THRESHOLDS["noul_no"] else "uncertain")
+            rows[qid] = {"type": kind, "value": noul, "band": band}
+    return {"model": response.get("model"), "usage": response.get("usage"), "questions": rows,
+            "thresholds": {**THRESHOLDS, "note": "Illustrative defaults. Tune on your own labeled data; "
+                                                 "a band is not permission to act."}}
