@@ -31,7 +31,7 @@ class SkillFileTests(unittest.TestCase):
         self.assertIn("name: prompt2jev\n", meta)
         description = re.search(r"description: (.*?)\nlicense:", meta, re.S).group(1)
         self.assertLess(len(description), 1024)
-        for trigger in ("prompt", "Jev", "TypeSafe", "System One"):
+        for trigger in ("prompt", "Jev", "TypeSafe", "System One", "script"):
             self.assertIn(trigger, description)
         self.assertNotIn(" I ", description)
         # An unquoted YAML scalar breaks on ": " and on a leading quote or hash.
@@ -51,7 +51,8 @@ class SkillFileTests(unittest.TestCase):
                        "one judgment per question", "not sent to the model", "backticked", "fallback",
                        "2 to 10 levels", "high value means yes", "one request", "second request",
                        "three bands", "validate", "--strict", "--dry-run", "typesafe_api_key",
-                       "openrouter_api_key"):
+                       "openrouter_api_key", "prompt2jev code", "--lang python", "python-stdlib", "runnable",
+                       "typesafe_sdk", "@typesafe-ai/sdk", "http"):
             self.assertIn(phrase, lowered, phrase)
 
     def test_links_resolve(self):
@@ -99,7 +100,7 @@ class RepoDocTests(unittest.TestCase):
         install = (ROOT / "docs" / "install.md").read_text(encoding="utf-8")
         for text in (readme, install):
             for phrase in ("skills/prompt2jev", "prompt2jev validate", "--dry-run", "TYPESAFE_API_KEY",
-                           ".claude/skills/", ".agents/skills/", ".opencode/skills/"):
+                           ".claude/skills/", ".agents/skills/", ".opencode/skills/", "prompt2jev code"):
                 self.assertIn(phrase, text, phrase)
         self.assertIn("npx skills add sumleo/prompt2jev", readme)
         self.assertIn("claude plugin marketplace add sumleo/prompt2jev", readme)
@@ -107,29 +108,60 @@ class RepoDocTests(unittest.TestCase):
         chinese = (ROOT / "README.zh.md").read_text(encoding="utf-8")
         self.assertIn("(README.md)", chinese)
         for phrase in ("skills/prompt2jev", "prompt2jev validate", "--dry-run", "--allow", "TYPESAFE_API_KEY",
-                       ".claude/skills/", ".agents/skills/", ".opencode/skills/",
+                       ".claude/skills/", ".agents/skills/", ".opencode/skills/", "prompt2jev code",
+                       "--lang python", "examples/triage",
                        "npx skills add sumleo/prompt2jev", "claude plugin marketplace add sumleo/prompt2jev"):
             self.assertIn(phrase, chinese, phrase)
         for name in ARCHETYPES:
             self.assertIn(name, chinese, name)
         anchors = re.findall(r'<a id="([^"]+)"></a>', readme)
         self.assertEqual(anchors, re.findall(r'<a id="([^"]+)"></a>', chinese))
-        for anchor in ("overview", "contents", "install", "usage", "package", "catalog", "cli", "io",
+        for anchor in ("overview", "contents", "install", "usage", "package", "catalog", "cli", "example",
                        "habits", "pitfalls", "credits"):
             self.assertIn(anchor, anchors)
             self.assertIn(f"](#{anchor})", readme)
         for text in (readme, chinese):
             positions = [text.index(f'<a id="{a}"></a>') for a in ("overview", "contents", "install", "usage")]
             self.assertEqual(positions, sorted(positions))
-            blocks = re.findall(r"```json\n(.*?)\n```", text, re.S)
-            for block in blocks:
-                payload = json.loads(block)
+            blocks = [json.loads(b) for b in re.findall(r"```json\n(.*?)\n```", text, re.S)]
+            requests = [b for b in blocks if "questions" in b]
+            self.assertGreaterEqual(len(requests), 1)
+            for payload in requests:
                 findings = p2j.lint_request(p2j.validate_request(payload))
                 self.assertEqual([f for f in findings if f["level"] == "warning"], [])
         plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
         marketplace = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
         self.assertEqual(plugin["name"], "prompt2jev")
         self.assertEqual(marketplace["plugins"][0]["name"], "prompt2jev")
+
+
+class ExampleTests(unittest.TestCase):
+    """examples/triage is the end-to-end walkthrough both READMEs show: request, generated script, real output."""
+    folder = ROOT / "examples" / "triage"
+
+    def test_request_is_lint_clean_and_script_is_the_generator_output(self):
+        payload = json.loads((self.folder / "request.json").read_text(encoding="utf-8"))
+        findings = p2j.lint_request(p2j.validate_request(payload))
+        self.assertEqual([f for f in findings if f["level"] == "warning"], [])
+        script = (self.folder / "triage.py").read_text(encoding="utf-8")
+        self.assertEqual(script, p2j.render_code(payload, "python", source="request.json", script="triage.py"))
+
+    def test_output_matches_the_request_and_is_shown_in_both_readmes(self):
+        payload = json.loads((self.folder / "request.json").read_text(encoding="utf-8"))
+        output = json.loads((self.folder / "output.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(output), {"model", *payload["questions"]})
+        self.assertTrue(output["model"].startswith("jev-"))
+        for qid, question in payload["questions"].items():
+            key = {"choice": "choice", "score": "level", "noul": "band"}[question["type"]]
+            self.assertIn(key, output[qid], qid)
+        script = (self.folder / "triage.py").read_text(encoding="utf-8").rstrip("\n")
+        rendered = json.dumps(output, ensure_ascii=False, indent=2)
+        for name in ("README.md", "README.zh.md"):
+            text = (ROOT / name).read_text(encoding="utf-8")
+            self.assertIn(json.dumps(payload, ensure_ascii=False, indent=2), text, f"{name}: request")
+            self.assertIn(script, text, f"{name}: script")
+            self.assertIn(rendered, text, f"{name}: output")
+            self.assertIn("examples/triage", text)
 
 
 if __name__ == "__main__":

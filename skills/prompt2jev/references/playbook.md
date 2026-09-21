@@ -26,8 +26,11 @@ the code around it. Read this once end to end; the worked example is the templat
    open-ended Choices, described Score levels, Nouls where yes is the high value.
 5. **One request.** All independent questions together, speculative ones included.
    A second request only when its state depends on a first answer.
-6. **Compose.** Constants block, confidence bands scaled by stakes, weights you own,
-   hard exclusions as separate rules, speculative answers read only on their branch.
+6. **Compose.** `prompt2jev code request.json --lang python --output <file>` writes
+   the runnable base; replace the `return` in its `decide()` with the branching.
+   Constants block, confidence bands scaled by stakes, weights you own, hard
+   exclusions as separate rules, speculative answers read only on their branch.
+   Compile the file, and run it once on the example state when a key is present.
 
 ## Digging in a codebase
 
@@ -175,6 +178,10 @@ example ticket contains one. Boundary cases go in the criteria, not in your head
 
 ### 4. Composition code
 
+Generated with `prompt2jev code request.json --lang python --output triage.py`, then
+`decide()` replaced by the `triage()` function below, which also takes the facts
+that stay in code (plan, amount, dates). The file compiles and runs as a script.
+
 ```python
 from datetime import date
 
@@ -291,6 +298,8 @@ playbook applies unchanged.
 ## Handing over the package
 
 Show the five parts in order: contract, split table, validated request JSON,
-composition code, assumptions and fixtures. State which validation ran
-(`validate --strict`, `run --dry-run`, or a live sample) and what it found. Do not
-report a request as ready until the validator has passed on the saved file.
+composition code as the path of the saved file, assumptions and fixtures. State
+which checks ran (`validate --strict`, `py_compile`, `run --dry-run`, or a live run
+of the file) and what they found; when the file ran, paste its real output. Do not
+report a request as ready until the validator has passed on the saved file, and do
+not report a script as ready until it has compiled.

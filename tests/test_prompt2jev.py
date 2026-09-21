@@ -1,5 +1,6 @@
 import contextlib
 import email.message
+import http.server
 import io
 import json
 import os
@@ -7,9 +8,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import types
 import unittest
 import urllib.error
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -449,6 +453,322 @@ def run_cli(argv, env=None, open_side_effect=None):
     return status, out.getvalue(), err.getvalue()
 
 
+def fake_response(payload):
+    """A contract-valid response for any request: first option, level 1, noul 0.9."""
+    answers = {}
+    for qid, question in payload["questions"].items():
+        kind = question["type"]
+        if kind == "choice":
+            labels = list(question["criteria"])
+            probabilities = {label: 0.0 for label in labels}
+            probabilities[labels[0]] = 1.0
+            answers[qid] = {"type": kind, "choice": labels[0], "probabilities": probabilities, "confidence": 1.0}
+        elif kind == "score":
+            levels = question["criteria"]
+            probabilities = {str(i): 0.0 for i in range(len(levels))}
+            probabilities["1"] = 1.0
+            answers[qid] = {"type": kind, "score": 1.0, "legend": {str(i): level for i, level in enumerate(levels)},
+                            "probabilities": probabilities, "confidence": 1.0}
+        else:
+            answers[qid] = {"type": kind, "noul": 0.9}
+    return {"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 10, "output_tokens": 2}}
+
+
+class _JevHandler(http.server.BaseHTTPRequestHandler):
+    seen: ClassVar[list] = []
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+        type(self).seen.append((self.path, self.headers.get("Authorization"), body))
+        reply = json.dumps(fake_response(body)).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(reply)))
+        self.end_headers()
+        self.wfile.write(reply)
+
+    def log_message(self, *args):
+        pass
+
+
+def stub_sdk(calls):
+    """A stand-in for typesafe_sdk 0.7 with the shapes the real package exposes."""
+    module = types.ModuleType("typesafe_sdk")
+
+    def question(kind):
+        class Question(dict):
+            type = kind
+
+            def __init__(self, **fields):
+                super().__init__(fields)
+        return Question
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def system_one(self, state, questions, *, model=None, **kwargs):
+            payload = {"model": model, "state": state,
+                       "questions": {qid: {"type": q.type, **q} for qid, q in questions.items()}}
+            calls.append(payload)
+            raw = fake_response(payload)
+            answers = {}
+            for qid, answer in raw["answers"].items():
+                if answer["type"] == "score":  # the Python SDK keys these by int
+                    answer = {**answer, "legend": {int(k): v for k, v in answer["legend"].items()},
+                              "probabilities": {int(k): v for k, v in answer["probabilities"].items()}}
+                answers[qid] = types.SimpleNamespace(**answer)
+            return types.SimpleNamespace(model=raw["model"], usage=types.SimpleNamespace(**raw["usage"]),
+                                         answers=answers)
+
+    module.Choice, module.Score, module.Noul = question("choice"), question("score"), question("noul")
+    module.NoulCriteria, module.TypeSafeClient = dict, Client
+    return module
+
+
+JS_STUB_SDK = """
+export const choice = (instructions, criteria) => ({ type: "choice", instructions, criteria });
+export const score = (instructions, criteria) => ({ type: "score", instructions, criteria });
+export const noul = (instructions, criteria) =>
+  criteria === undefined ? { type: "noul", instructions } : { type: "noul", instructions, criteria };
+export class TypeSafeClient {
+  async systemOne(request) {
+    process.stderr.write(JSON.stringify(request));
+    const answers = {};
+    for (const [id, q] of Object.entries(request.questions)) {
+      if (q.type === "choice") {
+        const labels = Object.keys(q.criteria);
+        const probabilities = Object.fromEntries(labels.map((l) => [l, 0]));
+        probabilities[labels[0]] = 1;
+        answers[id] = { type: "choice", choice: labels[0], probabilities, confidence: 1 };
+      } else if (q.type === "score") {
+        const legend = Object.fromEntries(q.criteria.map((c, i) => [String(i), c]));
+        const probabilities = Object.fromEntries(q.criteria.map((c, i) => [String(i), i === 1 ? 1 : 0]));
+        answers[id] = { type: "score", score: 1, legend, probabilities, confidence: 1 };
+      } else {
+        answers[id] = { type: "noul", noul: 0.9 };
+      }
+    }
+    return { model: "jev-1.13.0", answers, usage: { input_tokens: 10, output_tokens: 2 } };
+  }
+}
+"""
+
+class CodeTests(unittest.TestCase):
+    payload = p2j.TEMPLATES["classify-route"]
+
+    def test_python_script_sends_the_request_and_reads_typed_answers(self):
+        source = p2j.render_code(self.payload, "python")
+        calls = []
+        namespace = {"__name__": "decide"}
+        with patch.dict(sys.modules, {"typesafe_sdk": stub_sdk(calls)}):
+            exec(compile(source, "decide.py", "exec"), namespace)
+            decision = namespace["decide"](namespace["EXAMPLE_STATE"])
+        self.assertEqual(calls, [self.payload])
+        self.assertEqual(decision["model"], "jev-1.13.0")
+        self.assertEqual(decision["category"]["choice"], "billing")
+        self.assertEqual(decision["refund_requested"]["band"], "yes")
+        self.assertEqual(decision["frustration"]["level"], 1)
+        self.assertEqual(decision["frustration"]["label"], self.payload["questions"]["frustration"]["criteria"][1])
+        self.assertIn("TYPESAFE_API_KEY", source)
+        self.assertIn("pip install typesafe-sdk", source)
+
+    def test_python_script_routes_low_confidence_to_review(self):
+        source = p2j.render_code(self.payload, "python")
+        namespace = {"__name__": "decide"}
+        with patch.dict(sys.modules, {"typesafe_sdk": stub_sdk([])}):
+            exec(compile(source, "decide.py", "exec"), namespace)
+        flat = types.SimpleNamespace(choice="billing", confidence=0.2, probabilities={"billing": 0.4, "other": 0.6})
+        self.assertEqual(namespace["read_choice"](flat)["choice"], "needs_review")
+        self.assertEqual(namespace["read_noul"](types.SimpleNamespace(noul=0.5))["band"], "uncertain")
+        self.assertEqual(namespace["read_noul"](types.SimpleNamespace(noul=0.1))["band"], "no")
+
+    def test_python_stdlib_script_runs_end_to_end_against_a_local_server(self):
+        server = http.server.HTTPServer(("127.0.0.1", 0), _JevHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        folder = Path(tempfile.mkdtemp())
+        script = folder / "decide.py"
+        script.write_text(p2j.render_code(self.payload, "python-stdlib"), encoding="utf-8")
+        state = {"ticket": {"text": "Where is my package? It is a week late."}}
+        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        env = {"PATH": os.environ.get("PATH", ""), "TYPESAFE_API_KEY": "test-key",
+               "TYPESAFE_BASE_URL": f"http://127.0.0.1:{server.server_port}"}
+        for argv, expected_state in (([], self.payload["state"]), ([str(folder / "state.json")], state)):
+            completed = subprocess.run([sys.executable, str(script), *argv], capture_output=True, text=True, env=env)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            path, auth, body = _JevHandler.seen[-1]
+            self.assertEqual((path, auth), ("/v1/systemone", "Bearer test-key"))
+            self.assertEqual(body, {**self.payload, "state": expected_state})
+            decision = json.loads(completed.stdout)
+            self.assertEqual(decision["category"]["choice"], "billing")
+            self.assertEqual(decision["blocks_work"]["band"], "yes")
+            self.assertEqual(decision["frustration"]["level"], 1)
+        completed = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                                   env={"PATH": os.environ.get("PATH", "")})
+        self.assertEqual(completed.returncode, 1)
+        self.assertIn("TYPESAFE_API_KEY", completed.stderr)
+
+    def test_javascript_and_curl_outputs(self):
+        source = p2j.render_code(self.payload, "javascript")
+        self.assertIn('from "@typesafe-ai/sdk"', source)
+        self.assertIn("systemOne", source)
+        self.assertIn("npm install @typesafe-ai/sdk", source)
+        for qid in self.payload["questions"]:
+            self.assertIn(f'"{qid}"', source)
+        if shutil.which("node"):
+            script = Path(tempfile.mkdtemp()) / "decide.mjs"
+            script.write_text(source, encoding="utf-8")
+            completed = subprocess.run(["node", "--check", str(script)], capture_output=True, text=True)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+        shell = p2j.render_code(self.payload, "curl")
+        self.assertIn("/v1/systemone", shell)
+        self.assertIn("Authorization: Bearer", shell)
+        body = shell.split("<<'JSON'\n", 1)[1].split("\nJSON", 1)[0]
+        self.assertEqual(json.loads(body), self.payload)
+
+    def test_every_archetype_renders_in_every_language(self):
+        for name in p2j.ARCHETYPES:
+            for lang in p2j.CODE_LANGS:
+                with self.subTest(archetype=name, lang=lang):
+                    source = p2j.render_code(p2j.TEMPLATES[name], lang)
+                    if lang.startswith("python"):
+                        compile(source, "decide.py", "exec")
+                    self.assertIn("jev-latest", source)
+
+    def test_python_script_imports_only_the_sdk_names_it_uses(self):
+        source = p2j.render_code(self.payload, "python")  # choice, score, noul with and without criteria
+        self.assertIn("from typesafe_sdk import Choice, Noul, NoulCriteria, Score, TypeSafeClient\n", source)
+        self.assertIn("from typesafe_sdk import Noul, TypeSafeClient\n", p2j.render_code(request("noul"), "python"))
+        self.assertIn("from typesafe_sdk import Choice, TypeSafeClient\n", p2j.render_code(request("choice"), "python"))
+        self.assertIn("from typesafe_sdk import Score, TypeSafeClient\n", p2j.render_code(request("score"), "python"))
+
+    HOSTILE_IDS = ("customer-name", "2nd", "class", "model", "jev_model", "MODEL", "QUESTIONS", "package",
+                   "q\u00b2", "__debug__", "a b", "a_b", "answers", "readChoice", "eval")
+
+    def hostile_payload(self):
+        payload = request("noul")
+        payload["questions"] = {qid: dict(payload["questions"]["q"]) for qid in self.HOSTILE_IDS}
+        return payload
+
+    def test_question_ids_become_safe_python_identifiers(self):
+        payload = self.hostile_payload()
+        source = p2j.render_code(payload, "python")
+        namespace = {"__name__": "decide"}
+        with patch.dict(sys.modules, {"typesafe_sdk": stub_sdk([])}):
+            exec(compile(source, "decide.py", "exec"), namespace)
+            decision = namespace["decide"](namespace["EXAMPLE_STATE"])
+        self.assertEqual(set(decision), {*self.HOSTILE_IDS, "jev_model_2"})  # model id kept under a free key
+        self.assertEqual(decision["jev_model_2"], "jev-1.13.0")
+        self.assertTrue(all(decision[qid]["band"] == "yes" for qid in self.HOSTILE_IDS))
+        # "model" is a safe Python local (the script reads response.model); only the JS side must rename it
+        for name in ("customer_name", "q_2nd", "class_", "model", "MODEL_", "a_b_2", "__debug___", "q_"):
+            self.assertIn(f"    {name} = read_noul(", source, name)
+        self.assertNotIn("q\u00b2 =", source)
+        compile(p2j.render_code(payload, "python-stdlib"), "decide.py", "exec")
+        with self.assertRaises(p2j.RequestError):
+            p2j.render_code(payload, "cobol")
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_question_ids_become_safe_javascript_identifiers(self):
+        source = p2j.render_code(self.hostile_payload(), "javascript")
+        script = Path(tempfile.mkdtemp()) / "decide.mjs"
+        script.write_text(source, encoding="utf-8")
+        completed = subprocess.run(["node", "--check", str(script)], capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        for name in ("MODEL_", "QUESTIONS_", "package_", "eval_", "answers_", "readChoice_"):
+            self.assertIn(f"  const {name} = read", source, name)
+        self.assertIn('"jev_model_2": model,', source)
+
+    @unittest.skipUnless(shutil.which("node"), "node is not installed")
+    def test_javascript_script_runs_end_to_end_against_a_stub_sdk(self):
+        folder = Path(tempfile.mkdtemp())
+        package = folder / "node_modules" / "@typesafe-ai" / "sdk"
+        package.mkdir(parents=True)
+        (package / "package.json").write_text(json.dumps({"name": "@typesafe-ai/sdk", "type": "module",
+                                                          "main": "index.mjs"}), encoding="utf-8")
+        (package / "index.mjs").write_text(JS_STUB_SDK, encoding="utf-8")
+        script = folder / "decide.mjs"
+        script.write_text(p2j.render_code(self.payload, "javascript"), encoding="utf-8")
+        state = {"ticket": {"text": "Where is my package?"}}
+        (folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        for argv, expected_state in (([], self.payload["state"]), (["state.json"], state)):
+            completed = subprocess.run(["node", "decide.mjs", *argv], capture_output=True, text=True, cwd=folder,
+                                       env={"PATH": os.environ.get("PATH", ""), "TYPESAFE_API_KEY": "k"})
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(json.loads(completed.stderr), {**self.payload, "state": expected_state})
+            decision = json.loads(completed.stdout)
+            self.assertEqual(decision["category"]["choice"], "billing")
+            self.assertEqual(decision["frustration"]["label"], self.payload["questions"]["frustration"]["criteria"][1])
+            self.assertEqual(decision["refund_requested"]["band"], "yes")
+
+    def test_deeply_nested_values_render_quickly(self):
+        state = {"ticket": {"text": "x"}}
+        for _ in range(60):
+            state = {"level": state}
+        payload = request(state=state)
+        payload["questions"]["q"]["instructions"] = "Does `level` ask for a refund?"
+        for lang in ("python", "python-stdlib"):
+            compile(p2j.render_code(payload, lang), "decide.py", "exec")
+
+    def test_stdlib_script_reports_unreachable_hosts_without_a_traceback(self):
+        script = Path(tempfile.mkdtemp()) / "decide.py"
+        script.write_text(p2j.render_code(self.payload, "python-stdlib"), encoding="utf-8")
+        completed = subprocess.run([sys.executable, str(script)], capture_output=True, text=True,
+                                   env={"PATH": os.environ.get("PATH", ""), "TYPESAFE_API_KEY": "k",
+                                        "TYPESAFE_BASE_URL": "http://127.0.0.1:1"})
+        self.assertEqual(completed.returncode, 1)
+        self.assertNotIn("Traceback", completed.stderr)
+        self.assertIn("127.0.0.1:1", completed.stderr)
+
+    def test_javascript_output_name_should_be_mjs(self):
+        path = Path(tempfile.mkdtemp())
+        (path / "request.json").write_text(json.dumps(request(model="jev-1.13.0")), encoding="utf-8")
+        status, _, err = run_cli(["code", str(path / "request.json"), "--lang", "javascript",
+                                 "--output", str(path / "decide.js")])
+        self.assertEqual(status, 0)
+        self.assertIn(".mjs", err)
+        status, _, err = run_cli(["code", str(path / "request.json"), "--lang", "javascript",
+                                 "--output", str(path / "decide.mjs")])
+        self.assertEqual((status, err), (0, ""))
+
+    def test_code_command_prints_or_writes_the_script(self):
+        path = str(Path(tempfile.mkdtemp()) / "request.json")
+        Path(path).write_text(json.dumps(request(model="jev-1.13.0")), encoding="utf-8")
+        status, out, err = run_cli(["code", path, "--lang", "python"])
+        self.assertEqual((status, err), (0, ""))
+        compile(out, "decide.py", "exec")
+        target = Path(tempfile.mkdtemp()) / "decide.py"
+        status, out, _ = run_cli(["code", path, "--lang", "python-stdlib", "--output", str(target)])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(out)["written"], str(target))
+        compile(target.read_text(encoding="utf-8"), "decide.py", "exec")
+        status, out, err = run_cli(["code", path, "--lang", "python"], env={})
+        self.assertEqual(status, 0)
+        status, out, err = run_cli(["code", str(Path(path).with_name("missing.json"))])
+        self.assertEqual((status, out), (1, ""))
+        self.assertIn("error", err)
+
+    def test_code_command_lints_but_still_generates(self):
+        payload = request()
+        payload["questions"]["q"]["criteria"] = {"a": "A", "b": "B"}
+        path = Path(tempfile.mkdtemp()) / "request.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        status, out, err = run_cli(["code", str(path)])
+        self.assertEqual(status, 0)
+        self.assertIn("choice-no-fallback", err)
+        compile(out, "decide.py", "exec")
+        status, _, err = run_cli(["code", str(path), "--allow", "choice-no-fallback", "--allow", "model-alias"])
+        self.assertEqual((status, err), (0, ""))
+
+
 class CliTests(unittest.TestCase):
     def write(self, payload):
         folder = tempfile.mkdtemp()
@@ -575,8 +895,9 @@ class CliTests(unittest.TestCase):
         for text in ("1" * 5000, "[" * 100_000):
             path = Path(tempfile.mkdtemp()) / "bad.json"
             path.write_text(text, encoding="utf-8")
-            completed = subprocess.run([sys.executable, str(SKILL / "scripts" / "prompt2jev.py"), "validate", str(path)],
-                                       capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+            command = [sys.executable, str(SKILL / "scripts" / "prompt2jev.py"), "validate", str(path)]
+            env = {"PATH": os.environ.get("PATH", "")}
+            completed = subprocess.run(command, capture_output=True, text=True, env=env)
             self.assertEqual(completed.returncode, 1, completed.stderr[-300:])
             self.assertIn("error", json.loads(completed.stderr.strip().splitlines()[-1]))
 
@@ -585,8 +906,8 @@ class CliTests(unittest.TestCase):
         path = Path(tempfile.mkdtemp()) / "surrogate.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         for env in ({}, {"PYTHONIOENCODING": "cp1252"}):
-            completed = subprocess.run([sys.executable, str(SKILL / "scripts" / "prompt2jev.py"), "validate", str(path)],
-                                       capture_output=True, env={"PATH": os.environ.get("PATH", ""), **env})
+            command = [sys.executable, str(SKILL / "scripts" / "prompt2jev.py"), "validate", str(path)]
+            completed = subprocess.run(command, capture_output=True, env={"PATH": os.environ.get("PATH", ""), **env})
             self.assertEqual(completed.returncode, 0, completed.stderr[-300:])
             self.assertIn(b"questions", completed.stdout)
 

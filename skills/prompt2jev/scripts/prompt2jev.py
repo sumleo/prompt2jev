@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """Validate, lint, and run TypeSafe Jev requests written by the prompt2jev skill.
 
-Standard library only. Python 3.10+. Commands: validate, run, template, setup.
+Standard library only. Python 3.10+. Commands: validate, run, code, template, setup.
 """
 
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
+import keyword
 import math
 import os
 import re
+import string
 import sys
 import time
-import http.client
 import urllib.error
 import urllib.request
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 PROVIDERS = {
     "typesafe": {"url": "https://api.typesafe.ai/v1/systemone", "env": "TYPESAFE_API_KEY",
@@ -327,7 +329,7 @@ def build_report(payload: dict, response: dict) -> dict:
                          "margin": round(ranked[0] - ranked[1], 4),
                          "confidence": answer["confidence"], "band": _band(answer["confidence"])}
         elif kind == "score":
-            nearest = int(math.floor(answer["score"] + 0.5))
+            nearest = int(answer["score"] + 0.5)
             rows[qid] = {"type": kind, "value": answer["score"], "nearest_level": nearest,
                          "nearest_level_text": answer["legend"][str(nearest)],
                          "confidence": answer["confidence"], "band": _band(answer["confidence"])}
@@ -736,6 +738,358 @@ TEMPLATES: dict = json.loads(r'''
 ARCHETYPES = tuple(TEMPLATES)
 
 
+# ----- Code generation: a runnable program from a validated request -----
+
+CODE_LANGS = ("python", "python-stdlib", "javascript", "curl")
+SCRIPT_NAMES = {"python": "decide.py", "python-stdlib": "decide.py", "javascript": "decide.mjs", "curl": "decide.sh"}
+RUNNERS = {"python": "python3", "python-stdlib": "python3", "javascript": "node", "curl": "bash"}
+_JS_RESERVED = {"await", "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete",
+                "do", "else", "enum", "export", "extends", "false", "finally", "for", "function", "if", "import",
+                "in", "instanceof", "let", "new", "null", "return", "static", "super", "switch", "this", "throw",
+                "true", "try", "typeof", "var", "void", "while", "with", "yield",
+                "implements", "interface", "package", "private", "protected", "public", "arguments", "eval",
+                "undefined", "NaN", "Infinity", "process", "console", "JSON", "Math",
+                "readFileSync", "fileURLToPath", "choice", "noul", "score", "TypeSafeClient", "MODEL",
+                "CONFIDENCE_FLOOR", "NOUL_YES", "NOUL_NO", "QUESTIONS", "EXAMPLE_STATE", "client", "readChoice",
+                "readScore", "readNoul", "decide", "answers", "model", "state", "file"}
+_PY_RESERVED = {"json", "os", "sys", "time", "urllib", "state", "response", "answers", "client", "ask", "decide",
+                "main", "read_choice", "read_score", "read_noul", "MODEL", "QUESTIONS", "EXAMPLE_STATE", "ENDPOINT",
+                "CONFIDENCE_FLOOR", "NOUL_YES", "NOUL_NO", "Choice", "Score", "Noul", "NoulCriteria",
+                "TypeSafeClient", "annotations", "argv", "handle", "__debug__"}
+
+
+def _identifier(qid: str, taken: set, reserved: set) -> str:
+    """A variable name for a question id that cannot collide with the script's own names."""
+    name = "".join(character if ("_" + character).isidentifier() else "_" for character in qid)
+    if not name or name[0].isdigit():
+        name = "q_" + name
+    if keyword.iskeyword(name) or name in reserved:
+        name += "_"
+    base, counter = name, 2
+    while name in taken:
+        name, counter = f"{base}_{counter}", counter + 1
+    taken.add(name)
+    return name
+
+
+def _js_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _py_literal(value, indent: int = 0, width: int = 88) -> str:
+    """Python source for a JSON value; containers spread over lines when a line would be too long."""
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)  # JSON string escapes are valid Python escapes
+    if value is None or isinstance(value, (bool, int, float)):
+        return repr(value)
+    if not value:
+        return "{}" if isinstance(value, dict) else "[]"
+    pad, close = " " * (indent + 4), " " * indent
+    if isinstance(value, dict):  # every child is rendered once; inline is possible only when all are one line
+        parts = [f"{json.dumps(key, ensure_ascii=False)}: {_py_literal(item, indent + 4, width)}"
+                 for key, item in value.items()]
+        open_, close_ = "{", "}"
+    else:
+        parts = [_py_literal(item, indent + 4, width) for item in value]
+        open_, close_ = "[", "]"
+    inline = open_ + ", ".join(parts) + close_
+    if "\n" not in inline and indent + len(inline) <= width:
+        return inline
+    return open_ + "\n" + "\n".join(f"{pad}{part}," for part in parts) + f"\n{close}{close_}"
+
+
+def _js_literal(value, indent: int = 0) -> str:
+    """JavaScript source for a JSON value (JSON is a JavaScript literal), re-indented."""
+    text = json.dumps(value, ensure_ascii=False, indent=2)
+    return text.replace("\n", "\n" + " " * indent)
+
+
+def _py_question(qid: str, question: dict) -> str:
+    kind = question["type"]
+    lines = [f"    {json.dumps(qid, ensure_ascii=False)}: {kind.capitalize()}(",
+             f"        instructions={_py_literal(question['instructions'], 8)},"]
+    if kind == "noul":
+        if "criteria" in question:
+            lines += ["        criteria=NoulCriteria(",
+                      f"            true={_py_literal(question['criteria']['true'], 12)},",
+                      f"            false={_py_literal(question['criteria']['false'], 12)},",
+                      "        ),"]
+    else:
+        lines.append(f"        criteria={_py_literal(question['criteria'], 8)},")
+    lines.append("    ),")
+    return "\n".join(lines)
+
+
+def _js_question(qid: str, question: dict) -> str:
+    kind = question["type"]
+    args = [_js_literal(question["instructions"], 4)]
+    if "criteria" in question:
+        args.append(_js_literal(question["criteria"], 4))
+    return f"  {_js_string(qid)}: {kind}(\n" + "".join(f"    {arg},\n" for arg in args) + "  ),"
+
+
+_PY_TEMPLATE = string.Template('''#!/usr/bin/env python3
+"""Jev decision generated by prompt2jev from $source.
+
+One System One request sends every question at once; the code below reads the typed
+answers. Every threshold lives in the constants block. The defaults are illustrative:
+tune them on labeled data before an answer triggers an action.
+
+Run:
+$run
+"""
+
+from __future__ import annotations
+
+$imports
+MODEL = $model  # pin a versioned id such as jev-1.13.0 once thresholds are tuned
+$endpoint
+# ----- Constants: every threshold in one place -----
+CONFIDENCE_FLOOR = 0.5  # a Choice or Score below this is not acted on; a person decides
+NOUL_YES = 0.8  # a Noul at or above this counts as yes
+NOUL_NO = 0.2  # a Noul at or below this counts as no; in between is uncertain
+
+QUESTIONS = $questions
+
+# The state the request was written against. Build the real one from your own data.
+EXAMPLE_STATE = $state
+
+
+$ask
+
+
+def read_choice(answer) -> dict:
+    """The chosen option, or needs_review when the distribution is too flat to act on."""
+    acted = $confidence >= CONFIDENCE_FLOOR
+    return {"choice": $choice if acted else "needs_review", "confidence": $confidence,
+            "probabilities": $probabilities}
+
+
+def read_score(answer) -> dict:
+    """The probability-weighted level and the nearest level's description."""
+    level = int($score + 0.5)
+    return {"score": $score, "level": level, "label": $legend, "confidence": $confidence}
+
+
+def read_noul(answer) -> dict:
+    """P(yes) with a yes / uncertain / no band. A Noul has no separate confidence."""
+    value = $noul
+    band = "yes" if value >= NOUL_YES else "no" if value <= NOUL_NO else "uncertain"
+    return {"noul": value, "band": band}
+
+
+def decide(state) -> dict:
+    """Read every answer, then branch. Replace the return with the decision your code needs."""
+    response = ask(state)
+    answers = $answers
+$reads
+    # Branch on the values above here; keep every threshold as a constant at the top.
+    return {
+        $model_key: $model_value,
+$returns
+    }
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) > 1:
+        with (sys.stdin if argv[1] == "-" else open(argv[1], encoding="utf-8")) as handle:
+            state = json.load(handle)
+    else:
+        state = EXAMPLE_STATE
+    print(json.dumps(decide(state), ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+''')
+
+_PY_SDK_ASK = '''def ask(state):
+    """Send every question in one request; they run in parallel."""
+    with TypeSafeClient() as client:  # reads TYPESAFE_API_KEY; retries 429 and 529 itself
+        return client.system_one(state=state, questions=QUESTIONS, model=MODEL)'''
+
+_PY_HTTP_ASK = '''def ask(state) -> dict:
+    """POST the request with the standard library; retry 429 and 529 with backoff, three attempts."""
+    key = os.environ.get("TYPESAFE_API_KEY", "").strip()
+    if not key:
+        sys.exit("Set TYPESAFE_API_KEY in the environment (https://console.typesafe.ai/keys)")
+    body = json.dumps({"model": MODEL, "state": state, "questions": QUESTIONS}).encode("utf-8")
+    for attempt in range(1, 4):
+        request = urllib.request.Request(ENDPOINT, data=body, method="POST", headers={
+            "Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as reply:
+                return json.load(reply)
+        except urllib.error.HTTPError as error:
+            if error.code not in (429, 529) or attempt == 3:
+                sys.exit(f"TypeSafe returned HTTP {error.code}: {error.read(300).decode('utf-8', 'replace')}")
+            retry_after = error.headers.get("retry-after", "")
+            time.sleep(float(retry_after) if retry_after.isdigit() else 2 ** (attempt - 1))
+        except urllib.error.URLError as error:  # DNS failure, refused connection, TLS problem
+            sys.exit(f"Could not reach {ENDPOINT}: {error.reason}")
+    raise AssertionError("unreachable")'''
+
+_PY_HTTP_IMPORTS = "import json\nimport os\nimport sys\nimport time\nimport urllib.error\nimport urllib.request\n"
+_PY_HTTP_ENDPOINT = ('\nENDPOINT = os.environ.get("TYPESAFE_BASE_URL", "https://api.typesafe.ai").rstrip("/")'
+                     ' + "/v1/systemone"\n')
+
+
+def _py_sdk_imports(questions: dict) -> str:
+    """The import block of the SDK script: only the names its questions use."""
+    names = {"TypeSafeClient"} | {question["type"].capitalize() for question in questions.values()}
+    if any(question["type"] == "noul" and "criteria" in question for question in questions.values()):
+        names.add("NoulCriteria")
+    return "import json\nimport sys\n\nfrom typesafe_sdk import " + ", ".join(sorted(names)) + "\n"
+
+_JS_TEMPLATE = string.Template('''#!/usr/bin/env node
+// Jev decision generated by prompt2jev from $source.
+//
+// One System One request sends every question at once; the code below reads the typed
+// answers. Every threshold lives in the constants block. The defaults are illustrative:
+// tune them on labeled data before an answer triggers an action.
+//
+// Run:
+$run
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { choice, noul, score, TypeSafeClient } from "@typesafe-ai/sdk";
+
+const MODEL = $model; // pin a versioned id such as jev-1.13.0 once thresholds are tuned
+
+// ----- Constants: every threshold in one place -----
+const CONFIDENCE_FLOOR = 0.5; // a Choice or Score below this is not acted on; a person decides
+const NOUL_YES = 0.8; // a Noul at or above this counts as yes
+const NOUL_NO = 0.2; // a Noul at or below this counts as no; in between is uncertain
+
+const QUESTIONS = {
+$questions
+};
+
+// The state the request was written against. Build the real one from your own data.
+const EXAMPLE_STATE = $state;
+
+const client = new TypeSafeClient(); // reads TYPESAFE_API_KEY; retries 429 and 529 itself
+
+function readChoice(answer) {
+  const { confidence, probabilities } = answer;
+  const acted = confidence >= CONFIDENCE_FLOOR;
+  return { choice: acted ? answer.choice : "needs_review", confidence, probabilities };
+}
+
+function readScore(answer) {
+  const level = Math.floor(answer.score + 0.5);
+  return { score: answer.score, level, label: answer.legend[level], confidence: answer.confidence };
+}
+
+function readNoul(answer) {
+  const value = answer.noul; // P(yes); a Noul has no separate confidence
+  const band = value >= NOUL_YES ? "yes" : value <= NOUL_NO ? "no" : "uncertain";
+  return { noul: value, band };
+}
+
+export async function decide(state) {
+  const { answers, model } = await client.systemOne({ model: MODEL, state, questions: QUESTIONS });
+$reads
+  // Branch on the values above here; keep every threshold as a constant at the top.
+  return {
+    $model_key: model,
+$returns
+  };
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const file = process.argv[2];
+  const state = file ? JSON.parse(readFileSync(file === "-" ? 0 : file, "utf8")) : EXAMPLE_STATE;
+  console.log(JSON.stringify(await decide(state), null, 2));
+}
+''')
+
+_CURL_TEMPLATE = string.Template('''#!/usr/bin/env bash
+# Jev request generated by prompt2jev from $source.
+# Any language can send this: POST the JSON body below with these two headers and read
+# the answers map that comes back (see references/api.md for the response fields).
+#
+# Run:
+#   export TYPESAFE_API_KEY=...        # https://console.typesafe.ai/keys
+#   bash $script
+set -euo pipefail
+: "$${TYPESAFE_API_KEY:?set TYPESAFE_API_KEY in the environment}"
+curl -sS "$${TYPESAFE_BASE_URL:-https://api.typesafe.ai}/v1/systemone" \\
+  -H "Authorization: Bearer $${TYPESAFE_API_KEY}" \\
+  -H "Content-Type: application/json" \\
+  --data-binary @- <<'JSON'
+$body
+JSON
+''')
+
+
+def _run_block(prefix: str, steps: list) -> str:
+    """The 'Run:' lines of a generated header, comments aligned in one column."""
+    width = max(len(command) for command, _ in steps) + 2
+    return "\n".join(f"{prefix}{command.ljust(width)}# {comment}" for command, comment in steps)
+
+
+def render_code(payload: dict, lang: str = "python", source: str = "request.json", script: str | None = None) -> str:
+    """A complete, runnable program for a validated request: SDK for Python and JavaScript, HTTP otherwise."""
+    if lang not in CODE_LANGS:
+        raise RequestError(f"lang must be one of {', '.join(CODE_LANGS)}")
+    script = script or SCRIPT_NAMES[lang]
+    questions = payload["questions"]
+    key_step = ("export TYPESAFE_API_KEY=...", "https://console.typesafe.ai/keys")
+    runner = RUNNERS[lang]
+    run_steps = [key_step, (f"{runner} {script}", "judges EXAMPLE_STATE"),
+                 (f"{runner} {script} state.json", "judges the JSON object in that file; - reads stdin")]
+    model_key, counter = "model", 1
+    while model_key in questions:  # a question named "model" keeps its slot; the model id moves
+        model_key = "jev_model" if counter == 1 else f"jev_model_{counter}"
+        counter += 1
+    if lang == "curl":
+        return _CURL_TEMPLATE.substitute(source=source, script=script,
+                                         body=json.dumps(payload, ensure_ascii=False, indent=2))
+    if lang == "javascript":
+        taken = set()
+        reads, returns = [], []
+        for qid, question in questions.items():
+            name = _identifier(qid, taken, _JS_RESERVED)
+            reads.append(f"  const {name} = read{question['type'].capitalize()}(answers[{_js_string(qid)}]);")
+            returns.append(f"    {_js_string(qid)}: {name},")
+        return _JS_TEMPLATE.substitute(
+            source=source, script=script, model=_js_string(payload["model"]),
+            run=_run_block("//   ", [("npm install @typesafe-ai/sdk", "Node 20+"), *run_steps]),
+            questions="\n".join(_js_question(qid, q) for qid, q in questions.items()),
+            state=_js_literal(payload["state"]), reads="\n".join(reads), returns="\n".join(returns),
+            model_key=_js_string(model_key))
+    sdk = lang == "python"
+    taken = set()
+    reads, returns = [], []
+    for qid, question in questions.items():
+        name = _identifier(qid, taken, _PY_RESERVED)
+        reads.append(f"    {name} = read_{question['type']}(answers[{json.dumps(qid, ensure_ascii=False)}])")
+        returns.append(f"        {json.dumps(qid, ensure_ascii=False)}: {name},")
+    if sdk:
+        rendered_questions = "{\n" + "\n".join(_py_question(qid, q) for qid, q in questions.items()) + "\n}"
+    else:
+        rendered_questions = _py_literal(questions, 0, width=0)
+    fields = ({"confidence": "answer.confidence", "choice": "answer.choice", "probabilities": "answer.probabilities",
+               "score": "answer.score", "legend": "answer.legend[level]", "noul": "answer.noul",
+               "answers": "response.answers", "model_value": "response.model"} if sdk else
+              {"confidence": 'answer["confidence"]', "choice": 'answer["choice"]',
+               "probabilities": 'answer["probabilities"]', "score": 'answer["score"]',
+               "legend": 'answer["legend"][str(level)]', "noul": 'answer["noul"]',
+               "answers": 'response["answers"]', "model_value": 'response["model"]'})
+    install = [("pip install typesafe-sdk", "the official SDK")] if sdk else []
+    return _PY_TEMPLATE.substitute(
+        source=source, script=script, model=json.dumps(payload["model"], ensure_ascii=False),
+        run=_run_block("    ", install + run_steps),
+        imports=_py_sdk_imports(questions) if sdk else _PY_HTTP_IMPORTS,
+        endpoint="" if sdk else _PY_HTTP_ENDPOINT,
+        questions=rendered_questions, state=_py_literal(payload["state"], 0, width=0),
+        ask=_PY_SDK_ASK if sdk else _PY_HTTP_ASK, reads="\n".join(reads), returns="\n".join(returns),
+        model_key=json.dumps(model_key), **fields)
+
+
 # ----- CLI -----
 
 def print_findings(findings, stream=None):
@@ -770,7 +1124,7 @@ def _check_output_path(path: str) -> Path:
     target = Path(path)
     if target.is_dir():
         raise RequestError(f"--output {path} is a directory")
-    parent = target.parent if str(target.parent) else Path(".")
+    parent = target.parent  # Path("name").parent is Path("."): a bare file name checks the working directory
     if not parent.is_dir() or not os.access(parent, os.W_OK) or (target.exists() and not os.access(target, os.W_OK)):
         raise RequestError(f"--output {path} is not writable; create the directory first")
     return target
@@ -819,6 +1173,24 @@ def cmd_run(args) -> int:
     return status
 
 
+def cmd_code(args) -> int:
+    payload = validate_request(read_json(args.request))
+    output_path = _check_output_path(args.output) if args.output else None
+    print_findings(_findings(payload, args.allow))
+    source = "stdin" if args.request == "-" else Path(args.request).name
+    code = render_code(payload, args.lang, source=source, script=output_path.name if output_path else None)
+    if output_path is None:
+        print(code, end="")
+        return 0
+    output_path.write_text(code, encoding="utf-8")
+    if args.lang == "javascript" and output_path.suffix != ".mjs":
+        print(f"warning: {output_path.name} is an ES module with top-level await; name it .mjs (or set "
+              '"type": "module" in package.json) so node runs it', file=sys.stderr)
+    runner = RUNNERS[args.lang]
+    print(json.dumps({"written": str(output_path), "lang": args.lang, "run": f"{runner} {output_path}"}))
+    return 0
+
+
 def cmd_template(args) -> int:
     print(json.dumps(TEMPLATES[args.archetype], ensure_ascii=False, indent=2))
     return 0
@@ -832,7 +1204,7 @@ def cmd_setup(args) -> int:
             present[name] = True
         except TransportError:
             present[name] = False
-    default = next((name for name in ("typesafe", "openrouter") if present[name]), None)
+    default = next((name for name in PROVIDERS if present[name]), None)
     print(json.dumps({
         "keys_present": present,
         "default_provider": default,
@@ -868,6 +1240,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--allow", action="append", default=[], metavar="CODE",
                      help="Suppress a lint code you have judged a false positive here (repeatable)")
     run.set_defaults(func=cmd_run)
+    code = commands.add_parser("code", help="Write a runnable program for a request: SDK for Python and "
+                                            "JavaScript, plain HTTP otherwise")
+    code.add_argument("request", help="Request JSON file, or - for stdin")
+    code.add_argument("--lang", choices=CODE_LANGS, default="python")
+    code.add_argument("--output", help="Write the program to this file instead of stdout")
+    code.add_argument("--allow", action="append", default=[], metavar="CODE",
+                      help="Suppress a lint code you have judged a false positive here (repeatable)")
+    code.set_defaults(func=cmd_code)
     template = commands.add_parser("template", help="Print a bundled archetype request to start from")
     template.add_argument("archetype", choices=ARCHETYPES)
     template.set_defaults(func=cmd_template)

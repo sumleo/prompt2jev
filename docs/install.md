@@ -69,9 +69,11 @@ the folder name and all subfolders. Do not copy `.git`, the docs mirror, or the 
 ```bash
 python3 <destination>/scripts/prompt2jev.py run <destination>/assets/classify-route.json --dry-run
 python3 <destination>/scripts/prompt2jev.py validate <destination>/assets/checklist-guardrail.json --strict
+python3 <destination>/scripts/prompt2jev.py code <destination>/assets/classify-route.json --lang python-stdlib | python3 -c "import sys; compile(sys.stdin.read(), 'decide.py', 'exec')"
 ```
 
-Both must exit 0 and print the request. Neither contacts the network. Then:
+All three must exit 0; the first two print the request, the third compiles a generated
+script. None contacts the network. Then:
 
 ```bash
 python3 <destination>/scripts/prompt2jev.py setup
@@ -92,7 +94,8 @@ uv tool install "$work/source"
 
 Report where it was installed and whether PATH needs a new shell. Once on PATH,
 `prompt2jev validate request.json --strict` replaces the `python3 <destination>/scripts/...`
-form above.
+form above, and `prompt2jev code request.json --lang python --output decide.py` writes
+a runnable script from a validated request.
 
 ### 7. Report
 
@@ -102,4 +105,5 @@ https://console.typesafe.ai/keys, restart or reload the host so it discovers the
 skill). Offer a first prompt:
 
 > Use the prompt2jev skill to convert the classifier prompt in `<file>` into a Jev
-> decision. Validate the request before showing it; do not make a live call yet.
+> decision and a Python script I can run. Validate the request and compile the
+> script before showing them; do not make a live call yet.

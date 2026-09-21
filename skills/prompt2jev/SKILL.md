@@ -1,9 +1,9 @@
 ---
 name: prompt2jev
-description: Use when a user asks to convert an LLM prompt, system prompt, prompt template, or prompt-and-parse step (classifier, router, judge, grader, extractor, guardrail) into TypeSafe Jev decisions, wants to replace an LLM call that returns labels, scores, booleans, or JSON fields with typed questions, or describes a decision requirement with no prompt yet. Also use when a request mentions Jev, TypeSafe, System One, "turn this prompt into questions", or "make this decision structured".
+description: Use when a user asks to convert an LLM prompt, system prompt, prompt template, or prompt-and-parse step (classifier, router, judge, grader, extractor, guardrail) into TypeSafe Jev decisions, wants to replace an LLM call that returns labels, scores, booleans, or JSON fields with typed questions, asks for a Python script, TypeScript module, or other program that calls Jev, or describes a decision requirement with no prompt yet. Also use when a request mentions Jev, TypeSafe, System One, "turn this prompt into questions", or "make this decision structured".
 license: MIT
 metadata:
-  requirements: Python 3.10+ runs the bundled validator with no third-party packages. Live calls need TYPESAFE_API_KEY (official API) or OPENROUTER_API_KEY and cost money; validation and dry runs need neither.
+  requirements: Python 3.10+ runs the bundled validator and code generator with no third-party packages. Generated Python needs typesafe-sdk (pip) and generated JavaScript needs @typesafe-ai/sdk (npm); the python-stdlib and curl outputs need nothing. Live calls need TYPESAFE_API_KEY (official API) or OPENROUTER_API_KEY and cost money; validation, dry runs, and code generation need neither.
 ---
 
 # Convert an LLM prompt into a Jev decision
@@ -27,13 +27,27 @@ Produce the conversion package. It has five parts, in this order, every time:
    the code rule it became. Nothing in the prompt goes unaccounted for.
 3. **Request JSON** in the native shape `{"model", "state", "questions"}`, saved to
    a file and validated with `prompt2jev validate --strict` before it is shown.
-4. **Composition code** in the project's language (Python with `typesafe_sdk` by
-   default, `@typesafe-ai/sdk` for JavaScript): a constants block holding every
-   threshold, weight, and hard rule, then one function that sends the request and
-   branches on the answers.
+4. **Composition code, as a file that runs.** Generate it from the validated request
+   with `prompt2jev code request.json --lang <lang> --output <file>`, then replace the
+   `return` in `decide()` with the branching from part 1. The file has imports, the
+   constants block (every threshold, weight, and hard rule), the questions, one call
+   that sends the request, `decide()`, and an entry point; it compiles, and it runs
+   on the example state. Language rule: Python gets the official `typesafe_sdk`
+   (`--lang python`); JavaScript and TypeScript projects get `@typesafe-ai/sdk`
+   (`--lang javascript`, an ES module saved as `.mjs`; the SDK ships its own
+   types); any other language, or a Python environment that cannot
+   install packages, sends the HTTP request directly, with `--lang python-stdlib`
+   or `--lang curl` as the reference (see [api.md](references/api.md)). When the
+   user asks only for the request, part 3 is the deliverable and this part is one
+   line on how to send it.
 5. **Assumptions and fixtures**: what was assumed, what the user should confirm,
    and the test cases to run before automating (positive, negative, ambiguous,
    missing evidence, adversarial).
+
+When the user asks for a script, a module, a program, or "code I can run", the
+answer is the path of the file from part 4 plus the output of running it: the real
+output when a key is present and the user approved a paid call, otherwise the
+`--dry-run` request and the exact command to run once a key exists.
 
 ## Step 0: read the prompt, dig before asking
 
@@ -121,8 +135,11 @@ evidence, building new state, or choosing the next options.
 
 ## Step 5: compose in code
 
-Constants live in one block at the top of the file so a reviewer can read every
-question and threshold in one place. Then:
+Start from the generated file (part 4). Its constants block holds `MODEL`, the
+confidence floor, and the Noul thresholds; its `read_choice`, `read_score`, and
+`read_noul` helpers turn each answer into a value plus a band. Keep every new
+threshold or weight in that block so a reviewer can read the whole decision in one
+place. Then, in `decide()`:
 
 - Gate on confidence with three bands. Route low-confidence answers to a person or
   a reasoning model. Raise the acting threshold for costly actions and lower it for
@@ -134,14 +151,17 @@ question and threshold in one place. Then:
 - Read speculative answers only on the branch they belong to.
 - Log the response's `model` field. Pin a versioned id once thresholds are tuned.
 
-See [composition.md](references/composition.md) for SDK call shapes and a full
-routing example.
+See [composition.md](references/composition.md) for the generated file's anatomy,
+the SDK call shapes, the HTTP shape for other languages, and a full routing example.
 
-## Step 6: validate and test
+## Step 6: validate, generate, run
 
 ```bash
 python3 <skill-dir>/scripts/prompt2jev.py validate request.json --strict
+python3 <skill-dir>/scripts/prompt2jev.py code request.json --lang python --output decide.py
+python3 -m py_compile decide.py                      # after editing decide()
 python3 <skill-dir>/scripts/prompt2jev.py run request.json --dry-run
+python3 decide.py                                    # live: TYPESAFE_API_KEY in the environment
 ```
 
 `validate` checks the contract and lints against the rules above (fallback option,
@@ -149,10 +169,14 @@ numeric levels, compound or negated Nouls, math in a question, unreferenced stat
 fields, oversized state). The lint is heuristic: fix every warning, or when a
 question is right as written (a closed set such as months needs no fallback; "terms
 and conditions" is one phrase), suppress that code with `--allow CODE` and say why
-in part 5. With a key present
-and the user's approval, run a small labeled sample, then tune thresholds on it and
-evaluate on held-out cases. Write fixtures for each branch, including inputs where
-the model should abstain.
+in part 5. `code` writes the runnable file for the language (`python`,
+`python-stdlib`, `javascript`, `curl`). It checks the contract and prints lint
+findings first, so a request that breaks the contract never becomes code; run it
+after `validate --strict` so lint warnings are already gone. With a key present and
+the user's approval, run
+the file once on the example state and paste its real output, then run a small
+labeled sample, tune thresholds on it, and evaluate on held-out cases. Write
+fixtures for each branch, including inputs where the model should abstain.
 
 ## Run
 
@@ -161,18 +185,21 @@ Python 3.10+. After `uv tool install` or `pipx install` of the repository,
 `prompt2jev` is on PATH and replaces `python3 <skill-dir>/scripts/prompt2jev.py`.
 
 ```bash
-prompt2jev setup                                   # which keys are present; prints no values
-prompt2jev template classify-route > request.json  # start from an archetype
+prompt2jev setup                                          # which keys are present; prints no values
+prompt2jev template classify-route > request.json         # start from an archetype
 prompt2jev validate request.json --strict
+prompt2jev code request.json --lang python --output decide.py   # or --lang javascript --output decide.mjs, python-stdlib, curl
 prompt2jev run request.json --dry-run
-prompt2jev run request.json                        # live call: TYPESAFE_API_KEY, model jev-latest
-prompt2jev run request.json --provider openrouter  # OPENROUTER_API_KEY, model typesafe/jev-1.13
+prompt2jev run request.json                               # live call: TYPESAFE_API_KEY, model jev-latest
+prompt2jev run request.json --provider openrouter         # OPENROUTER_API_KEY, model typesafe/jev-1.13
 ```
 
 Keys come from the process environment only; never paste one into chat, a request
-file, or a repository. A live call costs money and sends the state to the provider,
-so confirm before the first one. Without a key, stop at a validated request and
-point the user to https://console.typesafe.ai/keys. Do not simulate Jev output.
+file, a generated script, or a repository. A live call costs money and sends the
+state to the provider, so confirm before the first one. Without a key, stop at a
+validated request plus the generated file and point the user to
+https://console.typesafe.ai/keys. Do not simulate Jev output: an output shown to the
+user is the output of a command that ran.
 
 Archetypes: `classify-route`, `checklist-guardrail`, `rubric-composite`,
 `extract-select`, `verify-claim`. Each is a validated request to copy and edit.
@@ -183,8 +210,8 @@ Archetypes: `classify-route`, `checklist-guardrail`, `rubric-composite`,
 |---|---|
 | Worked conversion, start to finish | [playbook.md](references/playbook.md) |
 | Rules and anti-patterns per primitive, known failure modes | [question-design.md](references/question-design.md) |
-| Request and response fields, endpoints, models, limits, errors | [api.md](references/api.md) |
-| Confidence bands, weights, fan-out, SDK code in Python and JS | [composition.md](references/composition.md) |
+| Request and response fields, endpoints, models, limits, errors, HTTP from any language | [api.md](references/api.md) |
+| The generated file's anatomy, confidence bands, weights, fan-out, SDK code in Python and JS | [composition.md](references/composition.md) |
 | Before and after pairs for common prompt shapes | [examples.md](references/examples.md) |
 
 ## Red flags
@@ -199,3 +226,5 @@ Stop and rework if you notice any of these:
 - A summary or reply is being requested from Jev.
 - Thresholds scattered through the code, or a Noul threshold applied to confidence.
 - The package is missing a part, or the request was shown before it was validated.
+- The user asked for a script and received a fragment, pseudo-code, or JSON only.
+- A file that was never compiled, or an "output" that no command produced.

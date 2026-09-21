@@ -5,6 +5,8 @@ hard rules in one constants block and keeps side effects outside the model.
 
 ## Contents
 
+- The generated file
+- HTTP from any language
 - Constants block
 - Confidence bands
 - Speculative fan-out
@@ -15,6 +17,67 @@ hard rules in one constants block and keeps side effects outside the model.
 - When a second request is warranted
 - JavaScript equivalent
 - Logging, pinning, caching
+
+## The generated file
+
+`prompt2jev code request.json --lang python --output decide.py` writes a complete
+program from a validated request. Its parts, top to bottom:
+
+| Part | What it holds | What you do with it |
+|---|---|---|
+| Header docstring | Where it came from, how to install and run | Leave it |
+| `MODEL` | The request's model id | Pin `jev-1.13.0` once thresholds are tuned |
+| Constants block | `CONFIDENCE_FLOOR`, `NOUL_YES`, `NOUL_NO` | Add every new threshold and weight here |
+| `QUESTIONS` | The questions as typed `Choice` / `Score` / `Noul` objects | Edit here and in `request.json` together |
+| `EXAMPLE_STATE` | The state the request was written against | Replace at runtime with real data |
+| `ask(state)` | One `client.system_one(...)` call | Leave it; the SDK retries 429 and 529 |
+| `read_choice`, `read_score`, `read_noul` | Answer to value plus band | Keep, or inline the ones you use |
+| `decide(state)` | Reads every answer, returns a dict | Replace the `return` with your branching |
+| `main(argv)` | Judges `EXAMPLE_STATE` or a JSON file, prints the result | Leave it, or import `decide` elsewhere |
+
+The same request in the other languages: `--lang javascript` (`@typesafe-ai/sdk`,
+Node 20+, exports `decide`), `--lang python-stdlib` (no dependencies, `urllib`,
+three attempts on 429 and 529), `--lang curl` (the raw request for any language).
+
+Extending `decide()` for the triage example in `examples/triage/` of the repository:
+
+```python
+def decide(state) -> dict:
+    response = ask(state)
+    answers = response.answers
+    team = read_choice(answers["team"])
+    urgent = read_noul(answers["urgent"])
+    refund_requested = read_noul(answers["refund_requested"])
+    if team["choice"] in ("needs_review", "other"):     # low confidence or nothing fits
+        return {"route": "human_triage", "model": response.model}
+    return {
+        "route": team["choice"],
+        "priority": "high" if urgent["band"] == "yes" else "normal",
+        "refund_requested": refund_requested["band"] == "yes",
+        "model": response.model,
+    }
+```
+
+`needs_review` is what `read_choice` returns under `CONFIDENCE_FLOOR`; a Noul band
+of `uncertain` sits between `NOUL_NO` and `NOUL_YES`. Both are places where a person
+or a reasoning model takes over.
+
+## HTTP from any language
+
+Every SDK call is one `POST` of the request JSON. For Go, Rust, Java, Ruby, or a
+Python environment without pip access, `--lang python-stdlib` is the reference
+implementation and `--lang curl` shows the exact bytes:
+
+- `POST {TYPESAFE_BASE_URL or https://api.typesafe.ai}/v1/systemone` with
+  `Authorization: Bearer <key>` and `Content-Type: application/json`.
+- The body is the validated request unchanged: `model`, `state`, `questions`.
+- Read `answers[<id>]`: `choice` / `probabilities` / `confidence`, `score` /
+  `legend` / `probabilities` / `confidence` (keyed by the string index `"0"`, `"1"`,
+  ...), or `noul`. Log `model` and `usage`.
+- Retry only 429 and 529, with exponential backoff and the `retry-after` header;
+  never retry 401 or 422.
+
+The field names and limits are in [api.md](api.md).
 
 ## Constants block
 

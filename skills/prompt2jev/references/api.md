@@ -1,8 +1,9 @@
 # API contract
 
 The request and response shapes the conversion targets, plus models, limits, and
-errors. Checked against the TypeSafe docs mirrored on 2026-09-20; the live docs at
-https://docs.typesafe.ai/api.md win when they differ.
+errors. Checked against the TypeSafe docs mirrored on 2026-09-20 and against live
+calls through `typesafe-sdk` 0.7.0, `@typesafe-ai/sdk` 0.6.0, and plain HTTP on
+2026-09-21; the live docs at https://docs.typesafe.ai/api.md win when they differ.
 
 ## Contents
 
@@ -21,6 +22,9 @@ POST https://api.typesafe.ai/v1/systemone
 Authorization: Bearer <TYPESAFE_API_KEY>
 Content-Type: application/json
 ```
+
+`TYPESAFE_BASE_URL` overrides the host for both SDKs and for the code
+`prompt2jev code` writes (useful for a local stub in tests).
 
 OpenRouter also serves Jev, with the same request body, at
 `POST https://openrouter.ai/api/alpha/decisions` using `OPENROUTER_API_KEY` and the
@@ -109,6 +113,9 @@ and timeout errors. The bundled CLI is narrower: up to three attempts on 429 and
 
 ## SDK quick shapes
 
+`prompt2jev code request.json --lang python|javascript` writes a complete program in
+these shapes from a validated request; the snippets below are the call and the reads.
+
 Python (`pip install typesafe-sdk`, reads `TYPESAFE_API_KEY`, defaults to `jev-latest`):
 
 ```python
@@ -133,8 +140,11 @@ answers["refund"].noul
 response.model, response.usage
 ```
 
-The Python SDK keys Score `probabilities` and `legend` by integer level. Async use
-is `AsyncTypeSafeClient` with `await client.system_one(...)`.
+`response.answers` is a plain dict of typed answers; `response.choices`,
+`response.scores`, and `response.nouls` are the same answers filtered by type. The
+Python SDK keys Score `probabilities` and `legend` by integer level (raw HTTP and the
+JavaScript SDK use the string index). Async use is `AsyncTypeSafeClient` with
+`await client.system_one(...)`.
 
 JavaScript (`npm install @typesafe-ai/sdk`, Node 20+):
 
@@ -165,5 +175,8 @@ curl -sS https://api.typesafe.ai/v1/systemone \
   --data-binary @request.json
 ```
 
-The bundled CLI does the same with validation, lint, a report, and bounded retries:
+`prompt2jev code request.json --lang curl` writes this command with the request
+embedded, and `--lang python-stdlib` is the same request as a dependency-free Python
+program with bounded retries: the two references for a language without an SDK. The
+bundled CLI does the same call with validation, lint, a report, and bounded retries:
 `prompt2jev run request.json`.

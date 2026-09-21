@@ -1,0 +1,32 @@
+{
+  "model": "jev-latest",
+  "state": {
+    "ticket": {
+      "text": "Nobody on my team can log in since this morning and payroll closes at 5pm."
+    }
+  },
+  "questions": {
+    "team": {
+      "type": "choice",
+      "instructions": "Which team should handle `ticket.text`?",
+      "criteria": {
+        "billing": "Charges, invoices, refunds, or subscriptions.",
+        "shipping": "Delivery status, delays, lost or damaged packages.",
+        "account": "Login, password, profile, permissions, or security.",
+        "other": "None of the listed teams fits, or the message is not a support request."
+      }
+    },
+    "urgent": {
+      "type": "noul",
+      "instructions": "Does `ticket.text` say the customer cannot use the product or has a deadline today?",
+      "criteria": {
+        "true": "States that the product is unusable for them now, or names a same-day deadline.",
+        "false": "Describes a problem they can work around, or sets no deadline."
+      }
+    },
+    "refund_requested": {
+      "type": "noul",
+      "instructions": "Does the customer in `ticket.text` explicitly ask for money back or a credit?"
+    }
+  }
+}

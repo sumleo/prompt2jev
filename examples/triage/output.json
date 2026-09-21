@@ -1,0 +1,21 @@
+{
+  "model": "jev-1.13.0",
+  "team": {
+    "choice": "account",
+    "confidence": 0.99,
+    "probabilities": {
+      "billing": 0.0,
+      "shipping": 0.0,
+      "account": 1.0,
+      "other": 0.0
+    }
+  },
+  "urgent": {
+    "noul": 0.98,
+    "band": "yes"
+  },
+  "refund_requested": {
+    "noul": 0.01,
+    "band": "no"
+  }
+}
