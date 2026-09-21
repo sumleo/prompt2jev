@@ -1,5 +1,7 @@
 # prompt2jev
 
+English · [简体中文](README.zh.md)
+
 An agent skill that converts an LLM prompt, or a plain-language decision
 requirement, into a [TypeSafe Jev](https://docs.typesafe.ai) decision: a typed
 `state`, atomic `choice` / `score` / `noul` questions, and the code that consumes the

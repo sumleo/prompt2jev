@@ -103,6 +103,15 @@ class RepoDocTests(unittest.TestCase):
                 self.assertIn(phrase, text, phrase)
         self.assertIn("npx skills add sumleo/prompt2jev", readme)
         self.assertIn("claude plugin marketplace add sumleo/prompt2jev", readme)
+        self.assertIn("(README.zh.md)", readme)
+        chinese = (ROOT / "README.zh.md").read_text(encoding="utf-8")
+        self.assertIn("(README.md)", chinese)
+        for phrase in ("skills/prompt2jev", "prompt2jev validate", "--dry-run", "--allow", "TYPESAFE_API_KEY",
+                       ".claude/skills/", ".agents/skills/", ".opencode/skills/",
+                       "npx skills add sumleo/prompt2jev", "claude plugin marketplace add sumleo/prompt2jev"):
+            self.assertIn(phrase, chinese, phrase)
+        for name in ARCHETYPES:
+            self.assertIn(name, chinese, name)
         plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
         marketplace = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
         self.assertEqual(plugin["name"], "prompt2jev")
