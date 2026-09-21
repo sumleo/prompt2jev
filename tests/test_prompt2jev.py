@@ -263,6 +263,12 @@ class AssetTests(unittest.TestCase):
                 self.assertGreaterEqual(len(payload["questions"]), 3)
                 self.assertIsInstance(payload["state"], dict)
 
+    def test_bundled_templates_match_asset_files(self):
+        self.assertEqual(set(p2j.TEMPLATES), set(p2j.ARCHETYPES))
+        for name in p2j.ARCHETYPES:
+            payload = json.loads((p2j.ASSETS_DIR / f"{name}.json").read_text(encoding="utf-8"))
+            self.assertEqual(p2j.TEMPLATES[name], payload, name)
+
 
 def run_cli(argv, env=None, open_side_effect=None):
     out, err = io.StringIO(), io.StringIO()
@@ -326,6 +332,15 @@ class CliTests(unittest.TestCase):
         self.assertEqual((status, report["keys_present"], report["default_provider"]),
                          (0, {"typesafe": False, "openrouter": True}, "openrouter"))
         self.assertNotIn("sk-secret", out)
+
+    def test_template_works_without_asset_files(self):
+        target = Path(tempfile.mkdtemp())
+        shutil.copy(SKILL / "scripts" / "prompt2jev.py", target / "prompt2jev.py")
+        completed = subprocess.run(
+            [sys.executable, str(target / "prompt2jev.py"), "template", "extract-select"],
+            capture_output=True, text=True, env={"PATH": os.environ.get("PATH", "")})
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        p2j.validate_request(json.loads(completed.stdout))
 
     def test_copied_skill_dir_still_runs(self):
         target = Path(tempfile.mkdtemp()) / "prompt2jev"

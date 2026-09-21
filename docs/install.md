@@ -90,7 +90,9 @@ uv tool install "$work/source"
 # or: pipx install "$work/source"
 ```
 
-Report where it was installed and whether PATH needs a new shell.
+Report where it was installed and whether PATH needs a new shell. Once on PATH,
+`prompt2jev validate request.json --strict` replaces the `python3 <destination>/scripts/...`
+form above.
 
 ### 7. Report
 
