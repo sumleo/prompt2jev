@@ -5,6 +5,5 @@
   "author": {"name": "sumleo", "url": "https://github.com/sumleo"},
   "homepage": "https://github.com/sumleo/prompt2jev",
   "repository": "https://github.com/sumleo/prompt2jev",
-  "license": "MIT",
-  "skills": ["./skills/prompt2jev"]
+  "license": "MIT"
 }
