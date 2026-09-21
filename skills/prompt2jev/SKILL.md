@@ -1,20 +1,22 @@
 ---
 name: prompt2jev
-description: Use when a user asks to convert an LLM prompt, system prompt, prompt template, or prompt-and-parse step (classifier, router, judge, grader, extractor, guardrail) into TypeSafe Jev decisions, wants to replace an LLM call that returns labels, scores, booleans, or JSON fields with typed questions, asks for a Python script, TypeScript module, or other program that calls Jev, or describes a decision requirement with no prompt yet. Also use when a request mentions Jev, TypeSafe, System One, "turn this prompt into questions", or "make this decision structured".
+description: Use when a user asks to convert an LLM prompt, system prompt, prompt template, or prompt-and-parse step (classifier, router, judge, grader, extractor, guardrail) into TypeSafe Jev decisions, points at the code that runs one (an LLM call that returns labels, scores, booleans, or JSON fields, with its parser and the branches on its output) and wants it replaced with typed questions, describes a decision requirement in natural language with no prompt yet, or asks for a Python script, TypeScript module, or other program that calls Jev. Also use when a request mentions Jev, TypeSafe, System One, "turn this prompt into questions", or "make this decision structured".
 license: MIT
 metadata:
   requirements: Python 3.10+ runs the bundled validator and code generator with no third-party packages. Generated Python needs typesafe-sdk (pip) and generated JavaScript needs @typesafe-ai/sdk (npm); the python-stdlib and curl outputs need nothing. Live calls need TYPESAFE_API_KEY (official API) or OPENROUTER_API_KEY and cost money; validation, dry runs, and code generation need neither.
 ---
 
-# Turn an LLM prompt or a plain-language requirement into a Jev decision
+# Turn natural language, an LLM prompt, or the code that runs one into a Jev decision
 
 Jev is TypeSafe's System One model. It evaluates typed questions against a `state`
-and returns probabilities, not prose. Code owns control flow. Converting a prompt, or
-a requirement stated in plain words, means moving each judgment in it into its own
-question, moving every rule code can compute into code, and leaving generation with a
-generative model. The bundled
-references distill the TypeSafe docs; when live docs are reachable,
-https://docs.typesafe.ai/llms.txt is the source of truth for the API contract.
+and returns probabilities, not prose. Code owns control flow. The input is one of
+three things: a requirement in natural language with no prompt yet, an LLM prompt
+(system prompt, template, or prompt-and-parse step), or the code that runs one today,
+with its parser and the branches on its output. Converting any of them means moving
+each judgment into its own question, moving every rule code can compute into code,
+and leaving generation with a generative model. The bundled references distill the
+TypeSafe docs; when live docs are reachable, https://docs.typesafe.ai/llms.txt is the
+source of truth for the API contract.
 
 ## What you deliver
 

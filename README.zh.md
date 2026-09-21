@@ -2,7 +2,7 @@
 
 # ⚡ prompt2jev
 
-**把自然语言变成 Jev：输入一段 LLM 提示词或一句需求，输出类型化的问题和能跑的代码。**
+**自然语言、LLM 提示词或调用 LLM 的代码进，Jev 决策出：类型化的问题，加一个能直接运行的脚本。**
 
 [![Skill](https://img.shields.io/badge/skill-prompt2jev-7c3aed?style=flat-square)](#install) [![Archetypes](https://img.shields.io/badge/archetypes-5-0d9488?style=flat-square)](#catalog) [![Tests](https://github.com/sumleo/prompt2jev/actions/workflows/test.yml/badge.svg)](https://github.com/sumleo/prompt2jev/actions/workflows/test.yml) [![MIT](https://img.shields.io/badge/license-MIT-ea580c?style=flat-square)](LICENSE)
 
@@ -10,19 +10,24 @@
 
 [概览](#overview) · [目录](#contents) · [安装](#install)
 
-[![观看：一条工单提示词在 23 秒内变成三个类型化问题、一个生成的脚本和真实的概率](assets/prompt2jev-walkthrough-poster.jpg)](assets/prompt2jev-walkthrough.mp4)
+https://github.com/user-attachments/assets/23285c9b-9678-4d36-ba12-f2cfff53b67a
 
-*23 秒无旁白：[端到端示例](#example)从提示词到真实答案的全过程。点击封面播放。*
+*23 秒无旁白：[端到端示例](#example)从提示词到真实答案的全过程。仓库内的文件：[`assets/prompt2jev-walkthrough.mp4`](assets/prompt2jev-walkthrough.mp4)。*
 
 </div>
 
 <a id="overview"></a>
 ## 概览
 
-prompt2jev 把自然语言变成一个 Jev 请求，以及围绕它的代码。
+prompt2jev 把三种输入中的任意一种变成一个 Jev 请求，以及围绕它的代码。
 
-**输入：** 一段你已经在跑的 LLM 提示词（system prompt、提示词模板，或一步输出标签、
-分数、布尔值或 JSON 字段的"提示后解析"调用），或者一句还没写成提示词的自然语言需求。
+**输入：** 下面三者之一：
+
+- **自然语言：** 一句用大白话说的需求，还没写成提示词。
+- **提示词：** system prompt、提示词模板，或一步输出标签、分数、布尔值或 JSON 字段的
+  "提示后解析"调用。
+- **代码：** 你代码库里今天跑着这段提示词的地方。Skill 会先读 LLM 调用、解析器、依赖每个
+  输出字段的分支和已有的枚举，然后才向你提问。
 
 **输出：** 同一个决策，改建在 [TypeSafe Jev](https://docs.typesafe.ai) 上。Jev 是
 TypeSafe 的 System One 模型：它不生成文本，而是针对一个 `state` 回答类型化的问题
@@ -30,16 +35,16 @@ TypeSafe 的 System One 模型：它不生成文本，而是针对一个 `state`
 概率。Jev 负责判断，你的代码负责决策。
 
 ```
-输入：自然语言                          输出
-──────────────────────────────          ─────────────────────────────────────────────
-一段 system prompt                      request.json   state + 类型化的 Jev 问题
-一个提示词模板                  ──►     decide.py      发送请求并按答案分支的脚本
-一句自然语言需求                        假设清单       自动化之前需要你确认的事项
+输入                                            输出
+───────────────────────────────────────────     ─────────────────────────────────────────────
+自然语言      一句大白话需求                    request.json   state + 类型化的 Jev 问题
+提示词        system prompt 或提示词模板    ──► decide.py      发送请求并按答案分支的脚本
+代码          LLM 调用和它的解析器              假设清单       自动化之前需要你确认的事项
 ```
 
 这个 Skill 教编码 Agent 完成转换，自带的命令行工具负责检查和生成各个部分：
 
-- **转换：** 提示词里的每个判断变成一个原子化的 `choice` / `score` / `noul` 问题；
+- **转换：** 输入里的每个判断变成一个原子化的 `choice` / `score` / `noul` 问题；
   代码能算的规则（算术、日期、精确匹配）搬进常量块和代码；格式化指令直接丢掉。
 - **校验：** 零依赖的命令行工具按 API 契约校验请求，并按 TypeSafe 文档的最佳实践做
   lint，然后才把请求展示给你。
@@ -128,14 +133,14 @@ uv tool install git+https://github.com/sumleo/prompt2jev
 <a id="usage"></a>
 ## 🚀 装好了？这样用
 
-**把下面任意一条发给你的 Agent。** 点名 Skill，指出提示词或需求在哪，剩下的
-挖掘工作由 Agent 完成。
+**把下面任意一条发给你的 Agent。** 点名 Skill，指出需求、提示词或跑着它的文件在哪，
+剩下的挖掘工作由 Agent 完成。
 
-### 转换代码里已有的提示词
+### 从自然语言开始，还没有提示词
 
 ```text
-使用 prompt2jev skill，把 src/triage.py 里的 system prompt 转换成 Jev 决策。
-保持下游行为不变。展示请求前先校验，暂时不要发起真实调用。
+使用 prompt2jev skill。我需要把收到的邮件路由到 sales、support 或 spam，
+并标记所有提到合同续约的邮件。请设计这个 Jev 决策和消费它的代码。
 ```
 
 ### 转换你粘贴进来的提示词
@@ -149,11 +154,12 @@ if the customer cannot use the product or has a deadline today. If they ask for 
 refund, add refund=true. Output JSON only."
 ```
 
-### 从需求而不是提示词开始
+### 转换今天跑着这段提示词的代码
 
 ```text
-使用 prompt2jev skill。我需要把收到的邮件路由到 sales、support 或 spam，
-并标记所有提到合同续约的邮件。请设计这个 Jev 决策和消费它的代码。
+使用 prompt2jev skill，把 src/triage.py 里的 LLM 调用转换成 Jev 决策。
+读一读提示词、解析器和依赖其输出的分支代码，保持下游行为不变。
+展示请求前先校验，暂时不要发起真实调用。
 ```
 
 ### 要一个能直接运行的脚本

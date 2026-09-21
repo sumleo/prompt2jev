@@ -2,7 +2,7 @@
 
 # ⚡ prompt2jev
 
-**Turn natural language into Jev: an LLM prompt or a plain requirement in, typed questions and runnable code out.**
+**Natural language, an LLM prompt, or the code that runs one in. A Jev decision out: typed questions and a runnable script.**
 
 [![Skill](https://img.shields.io/badge/skill-prompt2jev-7c3aed?style=flat-square)](#install) [![Archetypes](https://img.shields.io/badge/archetypes-5-0d9488?style=flat-square)](#catalog) [![Tests](https://github.com/sumleo/prompt2jev/actions/workflows/test.yml/badge.svg)](https://github.com/sumleo/prompt2jev/actions/workflows/test.yml) [![MIT](https://img.shields.io/badge/license-MIT-ea580c?style=flat-square)](LICENSE)
 
@@ -10,20 +10,25 @@ English · [简体中文](README.zh.md)
 
 [Overview](#overview) · [Contents](#contents) · [Install](#install)
 
-[![Watch: one support-ticket prompt becomes three typed questions, a generated script, and real probabilities, in 23 seconds](assets/prompt2jev-walkthrough-poster.jpg)](assets/prompt2jev-walkthrough.mp4)
+https://github.com/user-attachments/assets/23285c9b-9678-4d36-ba12-f2cfff53b67a
 
-*23 seconds, no narration: [the end-to-end example](#example) from prompt to real answers. Click the poster to play.*
+*23 seconds, no narration: [the end-to-end example](#example) from prompt to real answers. Also in the repo as [`assets/prompt2jev-walkthrough.mp4`](assets/prompt2jev-walkthrough.mp4).*
 
 </div>
 
 <a id="overview"></a>
 ## Overview
 
-prompt2jev turns natural language into a Jev request and the code around it.
+prompt2jev turns any of three inputs into a Jev request and the code around it.
 
-**In:** an LLM prompt you already run (a system prompt, a prompt template, or a
-prompt-and-parse step that returns labels, scores, booleans, or JSON fields), or a
-requirement stated in plain words with no prompt written yet.
+**In:** one of these:
+
+- **Natural language:** a requirement stated in plain words, with no prompt written yet.
+- **A prompt:** a system prompt, a prompt template, or a prompt-and-parse step that
+  returns labels, scores, booleans, or JSON fields.
+- **Code:** the place in your codebase that runs that prompt today. The skill reads the
+  LLM call, the parser, the branches on each output field, and any existing enums
+  before it asks you anything.
 
 **Out:** the same decision rebuilt on [TypeSafe Jev](https://docs.typesafe.ai). Jev is
 TypeSafe's System One model. It does not generate text. It answers typed questions about
@@ -31,17 +36,17 @@ a `state` (`choice` picks a label, `score` grades on a scale, `noul` answers yes
 and returns probabilities your code can branch on. Jev judges; your code decides.
 
 ```
-natural language in                     what you get out
-──────────────────────────────          ─────────────────────────────────────────────
-a system prompt                         request.json   state + typed Jev questions
-a prompt template               ──►     decide.py      a script that sends it and branches
-a plain-language requirement            assumptions    what to confirm before you automate
+in                                                   out
+────────────────────────────────────────────────     ─────────────────────────────────────────────
+natural language   a requirement in plain words      request.json   state + typed Jev questions
+a prompt           a system prompt or a template ──► decide.py      a script that sends it and branches
+code               the LLM call and its parser       assumptions    what to confirm before you automate
 ```
 
 The skill teaches a coding agent to do the conversion; a bundled CLI checks and
 generates the pieces:
 
-- **Convert:** each judgment in the prompt becomes one atomic `choice` / `score` / `noul`
+- **Convert:** each judgment in the input becomes one atomic `choice` / `score` / `noul`
   question; every rule code can compute (arithmetic, dates, exact matching) moves into a
   constants block and code; formatting instructions are dropped.
 - **Verify:** the dependency-free CLI validates the request against the API contract and
@@ -126,15 +131,15 @@ uv tool install git+https://github.com/sumleo/prompt2jev
 <a id="usage"></a>
 ## 🚀 Installed it? Here is how to use it
 
-**Send one of these prompts to your agent.** Name the skill and point at the prompt
-or the requirement; the agent does the digging.
+**Send one of these prompts to your agent.** Name the skill and point at the
+requirement, the prompt, or the file that runs it; the agent does the digging.
 
-### Convert a prompt that lives in your code
+### Start from natural language, no prompt yet
 
 ```text
-Use the prompt2jev skill to convert the system prompt in src/triage.py into a Jev
-decision. Keep the same downstream behavior. Validate the request before showing
-it and do not make a live call yet.
+Use the prompt2jev skill. I need to route incoming emails to sales, support, or
+spam, and flag anything that mentions a contract renewal. Design the Jev decision
+and the code that consumes it.
 ```
 
 ### Convert a prompt you paste in
@@ -148,12 +153,13 @@ if the customer cannot use the product or has a deadline today. If they ask for 
 refund, add refund=true. Output JSON only."
 ```
 
-### Start from a requirement instead of a prompt
+### Convert the code that runs a prompt today
 
 ```text
-Use the prompt2jev skill. I need to route incoming emails to sales, support, or
-spam, and flag anything that mentions a contract renewal. Design the Jev decision
-and the code that consumes it.
+Use the prompt2jev skill to convert the LLM call in src/triage.py into a Jev
+decision. Read the prompt, the parser, and the code that branches on its output,
+and keep the same downstream behavior. Validate the request before showing it and
+do not make a live call yet.
 ```
 
 ### Get a script you can run

@@ -134,6 +134,30 @@ class RepoDocTests(unittest.TestCase):
         self.assertEqual(plugin["name"], "prompt2jev")
         self.assertEqual(marketplace["plugins"][0]["name"], "prompt2jev")
 
+    def test_every_description_names_the_three_inputs(self):
+        """prompt2jev converts natural language, a prompt, or the code that runs one; say so everywhere."""
+        plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
+        marketplace = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+        descriptions = {
+            "plugin.json": plugin["description"],
+            "marketplace.json": marketplace["description"],
+            "marketplace.json plugin": marketplace["plugins"][0]["description"],
+            "pyproject.toml": re.search(r'^description = "(.*)"$', pyproject, re.M).group(1),
+            "SKILL.md frontmatter": frontmatter(skill),
+            "SKILL.md title": re.search(r"^# .*$", skill, re.M).group(0),
+            "prompt2jev.py docstring": p2j.__doc__,
+            "install.md": (ROOT / "docs" / "install.md").read_text(encoding="utf-8").split("\n\n")[1],
+            "README.md tagline": (ROOT / "README.md").read_text(encoding="utf-8").split("\n\n")[2],
+        }
+        for name, text in descriptions.items():
+            for phrase in ("natural language", "prompt", "code that runs"):
+                self.assertIn(phrase, text.lower(), f"{name}: {phrase}")
+        tagline = (ROOT / "README.zh.md").read_text(encoding="utf-8").split("\n\n")[2]
+        for phrase in ("自然语言", "提示词", "代码"):
+            self.assertIn(phrase, tagline, phrase)
+
 
 class ExampleTests(unittest.TestCase):
     """examples/triage is the end-to-end walkthrough both READMEs show: request, generated script, real output."""

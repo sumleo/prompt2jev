@@ -1,7 +1,8 @@
 # Install prompt2jev with your agent
 
-prompt2jev turns an LLM prompt or a plain-language requirement into a TypeSafe Jev
-request and the code that acts on the answers. This page installs the skill.
+prompt2jev turns natural language, an LLM prompt, or the code that runs one into a
+TypeSafe Jev request and a runnable script that acts on the answers. This page
+installs the skill.
 
 ## For people
 
