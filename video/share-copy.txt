@@ -1,1 +1,0 @@
-Introducing prompt2jev: turn an LLM prompt into a TypeSafe Jev decision your code can branch on. One support-ticket prompt becomes three typed questions, a validated request, a Python script that runs, and probabilities instead of prose. Jev judges; your code decides.

@@ -36,10 +36,3 @@ Thumbs.db
 .cursor/
 .opencode/
 skills-lock.json
-
-# The README video: render artifacts, and the music bed (see video/README.md for where it comes from)
-video/composition/renders/
-video/composition/snapshots/
-video/composition/node_modules/
-video/composition/.hf-tmp/
-video/composition/assets/music/*.mp3

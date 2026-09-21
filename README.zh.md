@@ -10,9 +10,9 @@
 
 [概览](#overview) · [目录](#contents) · [安装](#install)
 
-[![观看：一条工单提示词在 23 秒内变成三个类型化问题、一个生成的脚本和真实的概率](video/prompt2jev-walkthrough-poster.jpg)](video/prompt2jev-walkthrough.mp4)
+[![观看：一条工单提示词在 23 秒内变成三个类型化问题、一个生成的脚本和真实的概率](assets/prompt2jev-walkthrough-poster.jpg)](assets/prompt2jev-walkthrough.mp4)
 
-*23 秒无旁白：[端到端示例](#example)从提示词到真实答案的全过程。点击封面播放；源文件在 [`video/`](video/README.md)。*
+*23 秒无旁白：[端到端示例](#example)从提示词到真实答案的全过程。点击封面播放。*
 
 </div>
 
@@ -506,7 +506,7 @@ skills/prompt2jev/
 examples/triage/        上面的端到端示例：请求、生成的脚本、真实输出
 docs/                   编写参考资料所依据的 TypeSafe 文档镜像
 docs/install.md         由 Agent 执行的安装指南
-video/                  README 里的视频：渲染好的 prompt2jev-walkthrough.mp4 和封面帧、分镜计划、Hyperframes 源文件
+assets/                 README 里的视频 prompt2jev-walkthrough.mp4 和它的封面帧
 tests/                  unittest 测试套件：python3 -m unittest discover -s tests -v
 ```
 
@@ -519,5 +519,9 @@ tests/                  unittest 测试套件：python3 -m unittest discover -s 
   从零构建新集成时可与本 Skill 配合使用。
 - [wuyoscar/jev-skill](https://github.com/wuyoscar/jev-skill)：本项目的仓库结构、安装
   流程和 README 形态所参照的集合。
+- README 里的视频用 [brag](https://github.com/latent-spaces/brag) skill 和
+  [Hyperframes](https://hyperframes.heygen.com/) 制作。音乐：[ende.app](https://ende.app/en) 的
+  "Happy Beats / Business Moves" 第 12 卷；音效：[Kenney](https://kenney.nl/) 和 unicae_games 的
+  [Keyboard Soundpack #1](https://opengameart.org/content/keyboard-soundpack-1-typing-and-single-keystrokes)，均为 CC0。
 
 [MIT](LICENSE)。
