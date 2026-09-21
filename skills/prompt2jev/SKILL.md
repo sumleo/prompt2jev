@@ -6,12 +6,13 @@ metadata:
   requirements: Python 3.10+ runs the bundled validator and code generator with no third-party packages. Generated Python needs typesafe-sdk (pip) and generated JavaScript needs @typesafe-ai/sdk (npm); the python-stdlib and curl outputs need nothing. Live calls need TYPESAFE_API_KEY (official API) or OPENROUTER_API_KEY and cost money; validation, dry runs, and code generation need neither.
 ---
 
-# Convert an LLM prompt into a Jev decision
+# Turn an LLM prompt or a plain-language requirement into a Jev decision
 
 Jev is TypeSafe's System One model. It evaluates typed questions against a `state`
-and returns probabilities, not prose. Code owns control flow. Converting a prompt
-means moving each judgment in it into its own question, moving every rule code can
-compute into code, and leaving generation with a generative model. The bundled
+and returns probabilities, not prose. Code owns control flow. Converting a prompt, or
+a requirement stated in plain words, means moving each judgment in it into its own
+question, moving every rule code can compute into code, and leaving generation with a
+generative model. The bundled
 references distill the TypeSafe docs; when live docs are reachable,
 https://docs.typesafe.ai/llms.txt is the source of truth for the API contract.
 

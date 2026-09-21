@@ -1,7 +1,7 @@
 {
   "name": "prompt2jev",
   "version": "0.2.0",
-  "description": "Convert LLM prompts into TypeSafe Jev decisions: typed state, Choice/Score/Noul questions, and code that consumes the answers.",
+  "description": "Turn an LLM prompt or a plain-language requirement into a TypeSafe Jev request (typed state, Choice/Score/Noul questions) and the code that acts on the answers.",
   "author": {"name": "sumleo", "url": "https://github.com/sumleo"},
   "homepage": "https://github.com/sumleo/prompt2jev",
   "repository": "https://github.com/sumleo/prompt2jev",

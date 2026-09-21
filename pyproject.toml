@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "prompt2jev"
 dynamic = ["version"]
-description = "Agent skill and CLI that convert LLM prompts into TypeSafe Jev decisions"
+description = "Agent skill and CLI that turn an LLM prompt or a plain-language requirement into a TypeSafe Jev request and the code that acts on the answers"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

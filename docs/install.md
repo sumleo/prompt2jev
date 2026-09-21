@@ -1,5 +1,8 @@
 # Install prompt2jev with your agent
 
+prompt2jev turns an LLM prompt or a plain-language requirement into a TypeSafe Jev
+request and the code that acts on the answers. This page installs the skill.
+
 ## For people
 
 Copy this into Claude Code, Codex, OpenCode, Cursor, or Gemini CLI:

@@ -1,11 +1,11 @@
 {
   "name": "prompt2jev",
-  "description": "Agent skill that converts LLM prompts into TypeSafe Jev decisions.",
+  "description": "Agent skill that turns an LLM prompt or a plain-language requirement into a TypeSafe Jev request and the code that acts on the answers.",
   "owner": {"name": "sumleo", "url": "https://github.com/sumleo"},
   "plugins": [
     {
       "name": "prompt2jev",
-      "description": "Turn a prompt or requirement into a validated Jev request plus composition code",
+      "description": "Turn an LLM prompt or a plain-language requirement into a validated Jev request plus the code that acts on the answers",
       "source": "./"
     }
   ]

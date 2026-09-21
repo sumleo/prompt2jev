@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Validate, lint, and run TypeSafe Jev requests written by the prompt2jev skill.
+"""Validate, lint, generate code for, and run the TypeSafe Jev requests that the
+prompt2jev skill writes from an LLM prompt or a plain-language requirement.
 
 Standard library only. Python 3.10+. Commands: validate, run, code, template, setup.
 """
