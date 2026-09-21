@@ -378,6 +378,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("--strict", err)
 
+    def test_validate_reads_stdin(self):
+        payload = request(model="jev-1.13.0")
+        with patch("sys.stdin", io.StringIO(json.dumps(payload))):
+            status, out, err = run_cli(["validate", "-", "--strict"])
+        self.assertEqual((status, json.loads(out), err), (0, payload, ""))
+
     def test_validate_reports_schema_errors(self):
         status, out, err = run_cli(["validate", self.write({"model": "x"})])
         self.assertEqual((status, out), (1, ""))
