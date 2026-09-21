@@ -125,7 +125,9 @@ Without the CLI installed, replace `prompt2jev` with
 
 Exit codes: `0` success, `1` invalid request, lint failure under `--strict`, missing
 key, or provider error. `run` prints the request, the raw response, and a per-question
-report with illustrative confidence bands that you are expected to tune.
+report with illustrative confidence bands that you are expected to tune. A response
+that does not match the documented contract is still printed in full before the
+error is reported, so a paid call is never lost.
 
 Archetypes for `template`: `classify-route`, `checklist-guardrail`,
 `rubric-composite`, `extract-select`, `verify-claim`.
