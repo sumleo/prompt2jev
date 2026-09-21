@@ -122,3 +122,100 @@ def validate_request(payload) -> dict:
     except (TypeError, ValueError) as error:
         raise RequestError("Request must contain only finite, JSON-compatible values") from error
     return payload
+
+
+# ----- Best-practice lint (distilled from the TypeSafe docs) -----
+
+FALLBACK_PREFIXES = ("other", "none", "unknown", "not_", "no_", "insufficient", "unclear", "ask_")
+STATE_TOKEN_LIMIT = 30_000
+NUMBER_WORDS = {"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"}
+MATH_PATTERN = re.compile(
+    r"\b(how many|count|sum of|total of|days since|days ago|weeks ago|older than|newer than|"
+    r"more than \d+|greater than|less than|at least \d+|at most \d+|percent|average|difference between|"
+    r"before \d+|after \d+)\b|%",
+    re.IGNORECASE,
+)
+NEGATION_PATTERN = re.compile(r"\b(not|no|never|without|free of|lacks?|absent)\b", re.IGNORECASE)
+COMPOUND_PATTERN = re.compile(r"\sand\s", re.IGNORECASE)
+
+
+def _question_text(instructions) -> str:
+    """The natural-language question inside instructions, for wording checks."""
+    if isinstance(instructions, str):
+        return instructions
+    if isinstance(instructions, dict):
+        for key in ("question", "instructions", "ask"):
+            if isinstance(instructions.get(key), str):
+                return instructions[key]
+        return " ".join(value for value in instructions.values() if isinstance(value, str))
+    return " ".join(value for value in instructions if isinstance(value, str))
+
+
+def _all_text(value) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def estimate_tokens(value) -> int:
+    return math.ceil(len(_all_text(value)) / 4)
+
+
+def _has_fallback(criteria: dict) -> bool:
+    return any(label.lower().startswith(FALLBACK_PREFIXES) for label in criteria)
+
+
+def _is_numeric_level(level) -> bool:
+    if not isinstance(level, str):
+        return False
+    text = level.strip().lower()
+    return bool(re.fullmatch(r"[\d.+-]+", text)) or text in NUMBER_WORDS
+
+
+def lint_request(payload: dict) -> list[dict]:
+    """Best-practice checks from the TypeSafe docs. Returns findings; never raises."""
+    findings: list[dict] = []
+
+    def add(code, message, question=None, level="warning"):
+        findings.append({"code": code, "level": level, "question": question, "message": message})
+
+    if payload.get("model") in MOVING_ALIASES:
+        add("model-alias", f"{payload['model']} moves with releases; pin a versioned id such as "
+            "jev-1.13.0 once thresholds are tuned.", level="info")
+    state = payload["state"]
+    if estimate_tokens(state) > STATE_TOKEN_LIMIT:
+        add("state-too-large", "state is above roughly 30k tokens; filter in code to the fields the "
+            "questions need.")
+    top_keys = list(state) if isinstance(state, dict) else []
+    referenced = False
+    for qid, question in payload["questions"].items():
+        kind = question["type"]
+        text = _question_text(question["instructions"]).strip()
+        if any(f"`{key}" in _all_text(question["instructions"]) for key in top_keys):
+            referenced = True
+        if len(text) < 12 or " " not in text:
+            add("instructions-too-short", "write the complete question in instructions; the id is not "
+                "sent to the model.", qid)
+        if MATH_PATTERN.search(text):
+            add("math-in-question", "arithmetic, counting, dates, and numeric comparisons belong in "
+                "code; ask only the semantic part.", qid)
+        if kind == "choice":
+            if not _has_fallback(question["criteria"]):
+                add("choice-no-fallback", "add an option such as other or not_stated so the model can "
+                    "say nothing fits.", qid)
+        elif kind == "score":
+            levels = question["criteria"]
+            if any(_is_numeric_level(level) for level in levels):
+                add("score-numeric-levels", "levels must describe situations; bare numbers give the "
+                    "model nothing to match.", qid)
+            elif any(isinstance(level, str) and len(level.strip()) < 10 for level in levels):
+                add("score-degree-only", "describe each level as a concrete situation, not a degree "
+                    "word.", qid)
+        else:
+            if COMPOUND_PATTERN.search(text):
+                add("noul-compound", "a noul judges one proposition; 'and' suggests two conditions, "
+                    "split them.", qid)
+            if NEGATION_PATTERN.search(text):
+                add("noul-negated", "phrase the question so a high value means yes; avoid negations.", qid)
+    if len(top_keys) >= 2 and not referenced:
+        add("state-field-unreferenced", "state has several fields but no question names one with a "
+            "backticked path such as `ticket.text`.")
+    return findings
